@@ -72,6 +72,10 @@ constexpr float kThumbMinHeight = 24.0f;
 constexpr float kBarHoverZone = 12.0f;
 constexpr double kBarHideDelaySec = 0.8;
 constexpr float kTrackAlpha = 0.06f;
+/// Thumb opacity at rest. The bar never disappears completely while there
+/// is something to scroll: in a small docked panel an invisible scrollbar
+/// reads as "this is all there is".
+constexpr float kBarRestAlpha = 0.45f;
 
 /// Layout treats anything larger than this as unbounded.
 constexpr float kUnbounded = 1e8f;
@@ -290,8 +294,25 @@ void ScrollView::layout(const Rect& frame) {
 
     // Range: everything that does not fit into the viewport.
     const float total = contentHeight_ + insets_.vertical();
+    const float previousMax = maxOffset_;
     maxOffset_ = std::max(0.0f, total - b.h);
     clampAndSettle();
+
+    // Content that has just become scrollable (first layout, a window resize,
+    // a job card appearing) shows the bar without waiting for input, so the
+    // panel never looks like it is showing everything it has.
+    if (maxOffset_ > 0.0f && previousMax <= 0.0f) {
+        showBar();
+    } else if (maxOffset_ <= 0.0f && previousMax > 0.0f) {
+        // Nothing left to scroll: retire the bar instead of parking it at the
+        // resting alpha over content that fits.
+        barOpacity_.setOwner(this);
+        if (timeline()) {
+            barOpacity_.animateTo(0.0f, springs::gentle);
+        } else {
+            barOpacity_.set(0.0f);
+        }
+    }
 }
 
 /**
@@ -761,8 +782,10 @@ void ScrollView::showBar() {
         if (view->barHover_ || view->draggingThumb_) {
             return;
         }
+        // Settle to the resting alpha, not to nothing, whenever the content
+        // actually overflows; a view with nothing to scroll hides the bar.
         view->barOpacity_.setOwner(view);
-        view->barOpacity_.animateTo(0.0f, springs::gentle);
+        view->barOpacity_.animateTo(view->maxOffset_ > 0.0f ? kBarRestAlpha : 0.0f, springs::gentle);
     });
 }
 

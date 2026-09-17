@@ -30,6 +30,10 @@ constexpr float kRowMinHeight = 44.0f;
 constexpr float kRowMinHeightNoSubtitle = 32.0f;
 /// Gap between the text column and a trailing accessory.
 constexpr float kAccessoryGap = 12.0f;
+/// Smallest label column a side-by-side row will accept. A wide accessory
+/// (a pop-up carrying a long file name) is squeezed instead of collapsing
+/// the label to an ellipsis, which is useless to read.
+constexpr float kMinTitleW = 96.0f;
 /// Gap between the text and an accessory placed on its own line.
 constexpr float kAccessoryBelowGap = 8.0f;
 /// Gap between title and subtitle.
@@ -196,10 +200,19 @@ Size SettingsRow::measure(const Constraints& c) {
         acc.h = std::max(0.0f, acc.h);
     }
 
-    // Text column: full width when the accessory sits below, else what is left.
+    // Text column: full width when the accessory sits below, else what is left
+    // after the accessory, with the same minimum the layout pass enforces so
+    // the measured height matches what is actually drawn.
     float textW = innerW;
     if (hasAccessory && !below_) {
-        textW = std::max(0.0f, innerW - acc.w - kAccessoryGap);
+        const float wanted = std::max(0.0f, innerW - acc.w - kAccessoryGap);
+        const float floorW = std::min(kMinTitleW, innerW);
+        if (wanted < floorW) {
+            textW = floorW;
+            acc.w = std::max(0.0f, innerW - floorW - kAccessoryGap);
+        } else {
+            textW = wanted;
+        }
     }
     float textH = 0.0f;
     float naturalTextW = 0.0f;
@@ -252,10 +265,18 @@ void SettingsRow::onLayout() {
         acc.h = std::clamp(acc.h, 0.0f, std::max(innerH, 0.0f));
     }
 
-    // Text column width and the two label heights.
+    // Text column width and the two label heights. The accessory yields space
+    // back to the label when the row is too narrow to give both what they want.
     float textW = innerW;
     if (hasAccessory && !below_) {
-        textW = std::max(0.0f, innerW - acc.w - kAccessoryGap);
+        const float wanted = std::max(0.0f, innerW - acc.w - kAccessoryGap);
+        const float floorW = std::min(kMinTitleW, innerW);
+        if (wanted < floorW) {
+            textW = floorW;
+            acc.w = std::max(0.0f, innerW - floorW - kAccessoryGap);
+        } else {
+            textW = wanted;
+        }
     }
     float titleH = 0.0f;
     if (title_ && title_->visible()) {

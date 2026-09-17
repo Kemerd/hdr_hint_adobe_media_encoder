@@ -457,6 +457,23 @@ bool WindowHost::recreate(WindowMode mode) {
         applyPlacement(floatingPlacement_);
         ::SetWindowPos(hwnd_, alwaysOnTop_ ? HWND_TOPMOST : HWND_NOTOPMOST, 0, 0, 0, 0,
                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+
+        // The window just changed size twice (creation, then placement) while
+        // it was still hidden, so the swap chain and the widget tree must be
+        // brought to the final client size before the first frame is drawn.
+        // Skipping this is what leaves a recreated window showing a stale,
+        // wrongly-scaled frame until something else forces a repaint.
+        RECT placed{};
+        if (::GetClientRect(hwnd_, &placed)) {
+            const UINT pw = static_cast<UINT>(std::max<LONG>(1, placed.right - placed.left));
+            const UINT ph = static_cast<UINT>(std::max<LONG>(1, placed.bottom - placed.top));
+            if (!surface_.resize(pw, ph)) {
+                HH_LOG_WARN(kLog, L"recreate: surface resize to {}x{} failed", pw, ph);
+            }
+        }
+        if (root_) {
+            root_->invalidateLayout();
+        }
         firstFramePresented_ = false;
         renderFrame();
         ::ShowWindow(hwnd_, SW_SHOWNA);
