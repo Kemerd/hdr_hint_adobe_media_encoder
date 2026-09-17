@@ -423,7 +423,9 @@ void SettingsScreen::buildBehaviour()
     showOnAmeLaunch_ = addToggleRow(group, L"Open when Media Encoder starts",
                                     L"Off: waits in the tray until you open the panel",
                                     [this](bool on) { vm_.setShowOnAmeLaunch(on); });
-    quitWithAme_ = addToggleRow(group, L"Quit when Media Encoder quits", L"", [this](bool on) { vm_.setQuitWithAme(on); });
+    quitWithAme_ = addToggleRow(group, L"Quit when Media Encoder quits",
+                                L"Waits for any running mux to finish first",
+                                [this](bool on) { vm_.setQuitWithAme(on); });
 
     // Appearance: System / Dark / Light with fixed-width segments.
     if (SettingsRow* row = group->addRow(L"Appearance")) {

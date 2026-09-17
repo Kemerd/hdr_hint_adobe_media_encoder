@@ -25,7 +25,7 @@ struct Settings {
     bool minimizeToTray = true;
     bool startMinimized = false;
     bool startWithWindows = false;             ///< HKCU Run entry; off by default - Media Encoder's startup script launches the app instead
-    bool quitWithAme = true;                   ///< when launched from the panel
+    bool quitWithAme = true;                   ///< exit once Media Encoder is gone (any launch route)
     bool showOnAmeLaunch = true;               ///< show the window when Media Encoder starts us
     bool reduceTransparency = false;
     std::wstring floatingPlacement;            ///< "x,y,w,h,dpi,max" (px) or empty

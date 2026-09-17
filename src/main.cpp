@@ -275,6 +275,7 @@ private:
     bool quitting_ = false;
     bool hiddenToTrayOnce_ = false;
     uint64_t ameMissingSinceMs_ = 0;
+    bool ameSeenRunning_ = false;   ///< AME has been alive at least once this session
 };
 
 /// Loads settings, presets and the engine (no window yet).
@@ -411,17 +412,24 @@ void App::wireWindow() {
                 settings_.floatingPlacement = placement;
             }
         }
-        // Launched by the panel: leave with AME (after any running mux finishes).
-        if (args_.fromPanel && settings_.quitWithAme && !quitting_) {
-            if (!ame::isAmeRunning()) {
+        // Leave with Media Encoder when the setting says so, however this
+        // instance was started: the user asked for "quit when AME quits", not
+        // "quit only if AME happened to launch me".
+        //
+        // AME must have been seen running at least once, otherwise an app
+        // started before Media Encoder (or on a machine without it) would quit
+        // itself five seconds in. A running mux always finishes first.
+        if (settings_.quitWithAme && !quitting_) {
+            if (ame::isAmeRunning()) {
+                ameSeenRunning_ = true;
+                ameMissingSinceMs_ = 0;
+            } else if (ameSeenRunning_) {
                 const uint64_t now = platform::nowMonotonicMs();
                 if (ameMissingSinceMs_ == 0) { ameMissingSinceMs_ = now; }
                 if (now - ameMissingSinceMs_ > 5000 && !(engine_ && engine_->muxRunning())) {
-                    HH_LOG_INFO(L"App", L"Media Encoder exited; quitting (launched from the panel)");
+                    HH_LOG_INFO(L"App", L"Media Encoder exited; quitting (quit_with_ame is on)");
                     requestQuit(true);
                 }
-            } else {
-                ameMissingSinceMs_ = 0;
             }
         }
     };
