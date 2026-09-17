@@ -1,0 +1,15 @@
+# Build output
+build/
+out/
+*.obj
+*.pdb
+*.ilk
+
+# Generated at configure time from docs/GUIDE.md
+resources/guide.md
+
+# Editor / OS
+.vs/
+*.user
+*.suo
+Thumbs.db

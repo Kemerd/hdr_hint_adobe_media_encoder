@@ -1,0 +1,278 @@
+/* ---------------------------------------------------------------------------
+ * HDR Hint CEP panel styles.
+ *
+ * The panel is normally hidden underneath the native HdrHint window, so the
+ * goal here is "legible and unobtrusive inside AME", not decoration. Every
+ * colour is a custom property that panel.js overwrites at runtime from
+ * CSInterface.getHostEnvironment().appSkinInfo, and again whenever AME fires
+ * ThemeColorChanged. The defaults below match AME's dark skin so the page looks
+ * right even before the script runs.
+ * ------------------------------------------------------------------------- */
+
+:root {
+    /* Surface + text. --bg is replaced with AME's real panel colour at runtime. */
+    --bg: #232323;
+    --fg: #d8d8d8;
+    --muted: rgba(216, 216, 216, 0.62);
+
+    /* Flat control chrome. Borders are translucent so they blend with any skin. */
+    --border: rgba(255, 255, 255, 0.12);
+    --btn-bg: rgba(255, 255, 255, 0.06);
+    --btn-bg-hover: rgba(255, 255, 255, 0.11);
+    --btn-bg-active: rgba(255, 255, 255, 0.16);
+
+    /* Accent: a desaturated blue that sits comfortably next to AME's own blues. */
+    --accent: #4a8ae6;
+    --accent-fg: #ffffff;
+
+    /* Status dot palette. */
+    --dot-grey: #8a8a8a;
+    --dot-green: #3fb950;
+    --dot-amber: #e3a008;
+    --dot-red: #e5484d;
+    --dot-blue: #4a8ae6;
+
+    /* Diagnostics log surface. */
+    --log-bg: rgba(0, 0, 0, 0.28);
+
+    --font: -apple-system, "Segoe UI", system-ui, "Helvetica Neue", Arial, sans-serif;
+    --mono: Consolas, "Cascadia Mono", "Courier New", monospace;
+}
+
+/* Light-skin overrides. panel.js toggles body.light / body.dark from the
+ * computed luminance of AME's panel background. */
+body.light {
+    --fg: #1e1e1e;
+    --muted: rgba(30, 30, 30, 0.6);
+    --border: rgba(0, 0, 0, 0.14);
+    --btn-bg: rgba(0, 0, 0, 0.04);
+    --btn-bg-hover: rgba(0, 0, 0, 0.08);
+    --btn-bg-active: rgba(0, 0, 0, 0.12);
+    --log-bg: rgba(0, 0, 0, 0.05);
+    --accent: #2f6fd1;
+}
+
+/* ---- page ---------------------------------------------------------------- */
+
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font: 12px/1.45 var(--font);
+    overflow: hidden;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#root {
+    box-sizing: border-box;
+    height: 100%;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    overflow: auto;
+}
+
+.muted {
+    color: var(--muted);
+}
+
+/* ---- status line --------------------------------------------------------- */
+
+#statusRow {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 18px;
+    font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#detailText, #bridgeText {
+    min-height: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#detailText:empty, #bridgeText:empty {
+    display: none;
+}
+
+/* The dot is a tiny circle with a soft ring; the colour class tells the state. */
+.dot {
+    flex: 0 0 auto;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: var(--dot-grey);
+    box-shadow: 0 0 0 2px rgba(127, 127, 127, 0.18);
+    transition: background-color 180ms ease-out, box-shadow 180ms ease-out;
+}
+
+.dot-grey  { background: var(--dot-grey); }
+.dot-green { background: var(--dot-green); box-shadow: 0 0 0 2px rgba(63, 185, 80, 0.22); }
+.dot-amber { background: var(--dot-amber); box-shadow: 0 0 0 2px rgba(227, 160, 8, 0.22); }
+.dot-red   { background: var(--dot-red);   box-shadow: 0 0 0 2px rgba(229, 72, 77, 0.22); }
+.dot-blue  { background: var(--dot-blue);  box-shadow: 0 0 0 2px rgba(74, 138, 230, 0.22); }
+
+/* Gentle pulse for the transitional states (launching / reconnecting). */
+.dot-pulse {
+    animation: dotPulse 1.2s ease-in-out infinite;
+}
+
+@keyframes dotPulse {
+    0%   { opacity: 1; }
+    50%  { opacity: 0.35; }
+    100% { opacity: 1; }
+}
+
+/* ---- buttons ------------------------------------------------------------- */
+
+#buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+button {
+    appearance: none;
+    -webkit-appearance: none;
+    box-sizing: border-box;
+    margin: 0;
+    padding: 4px 10px;
+    min-height: 24px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--btn-bg);
+    color: var(--fg);
+    font: inherit;
+    font-size: 12px;
+    line-height: 1.2;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: background-color 120ms ease-out, border-color 120ms ease-out, opacity 120ms ease-out;
+}
+
+button:hover {
+    background: var(--btn-bg-hover);
+}
+
+button:active {
+    background: var(--btn-bg-active);
+}
+
+button:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+}
+
+button:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+button:disabled:hover {
+    background: var(--btn-bg);
+}
+
+/* The primary action (Launch) gets the accent fill; still flat, no gradients. */
+button.primary {
+    background: var(--accent);
+    border-color: transparent;
+    color: var(--accent-fg);
+}
+
+button.primary:hover {
+    filter: brightness(1.08);
+}
+
+button.primary:active {
+    filter: brightness(0.94);
+}
+
+/* ---- hint + diagnostics -------------------------------------------------- */
+
+#hint {
+    line-height: 1.4;
+}
+
+#diag {
+    margin-top: auto;
+    border-top: 1px solid var(--border);
+    padding-top: 6px;
+}
+
+#diag summary {
+    cursor: pointer;
+    color: var(--muted);
+    outline: none;
+    list-style: none;
+}
+
+#diag summary::-webkit-details-marker {
+    display: none;
+}
+
+#diag summary::before {
+    content: "\25B8";
+    display: inline-block;
+    width: 12px;
+    color: var(--muted);
+}
+
+#diag[open] summary::before {
+    content: "\25BE";
+}
+
+#diagTools {
+    display: flex;
+    gap: 6px;
+    margin: 6px 0;
+}
+
+#diagTools button {
+    padding: 2px 8px;
+    min-height: 20px;
+    font-size: 11px;
+}
+
+/* The log is selectable so the user can copy a line into a bug report. */
+#log {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 6px 8px;
+    max-height: 240px;
+    overflow: auto;
+    background: var(--log-bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--fg);
+    font: 11px/1.4 var(--mono);
+    white-space: pre-wrap;
+    word-break: break-all;
+    -webkit-user-select: text;
+    user-select: text;
+}
+
+/* Compact layout for the MinSize geometry (280x160): hide the prose, keep
+ * status and buttons, and let the diagnostics collapse out of the way. */
+@media (max-height: 220px), (max-width: 320px) {
+    #root {
+        padding: 6px 8px;
+        gap: 5px;
+    }
+
+    #hint {
+        display: none;
+    }
+
+    #log {
+        max-height: 90px;
+    }
+}

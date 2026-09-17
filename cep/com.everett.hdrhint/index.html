@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HDR Hint</title>
+  <link rel="stylesheet" href="css/panel.css">
+</head>
+<body class="dark">
+  <div id="root">
+
+    <!-- Link status: coloured dot + one-line state, plus a muted detail line
+         (app version, dock state, job counts) that the app fills over the pipe. -->
+    <div id="statusRow">
+      <span id="dot" class="dot dot-grey" aria-hidden="true"></span>
+      <span id="statusText">Starting...</span>
+    </div>
+    <div id="detailText" class="muted"></div>
+
+    <!-- Actions. Dock/Undock is a toggle whose label follows the app's docked flag. -->
+    <div id="buttons">
+      <button id="btnLaunch" class="primary" type="button" title="Start the HDR Hint application">Launch HDR Hint</button>
+      <button id="btnShow" type="button" title="Bring the HDR Hint window to the front">Show</button>
+      <button id="btnDock" type="button" title="Toggle between docked and floating">Undock</button>
+      <button id="btnLocate" type="button" title="Pick HdrHint.exe manually">Locate...</button>
+    </div>
+
+    <!-- Explanation for the (rare) moment the native window is not covering us. -->
+    <div id="hint" class="muted">The HDR Hint window docks over this panel. If it is not visible, click Show.</div>
+
+    <!-- Bridge summary: how many ExtendScript listeners registered, and any errors. -->
+    <div id="bridgeText" class="muted"></div>
+
+    <!-- Collapsible diagnostics: last 200 log lines, newest at the bottom. -->
+    <details id="diag">
+      <summary>Diagnostics</summary>
+      <div id="diagTools">
+        <button id="btnCopyLog" type="button">Copy log</button>
+        <button id="btnClearLog" type="button">Clear</button>
+      </div>
+      <pre id="log"></pre>
+    </details>
+
+  </div>
+  <script src="js/CSInterface.js"></script>
+  <script src="js/panel.js"></script>
+</body>
+</html>

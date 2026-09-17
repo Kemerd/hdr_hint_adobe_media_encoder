@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<ExtensionManifest Version="6.0"
+                   ExtensionBundleId="com.everett.hdrhint"
+                   ExtensionBundleVersion="1.0.0"
+                   ExtensionBundleName="HDR Hint"
+                   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <ExtensionList>
+    <Extension Id="com.everett.hdrhint.panel" Version="1.0.0"/>
+  </ExtensionList>
+  <ExecutionEnvironment>
+    <HostList>
+      <Host Name="AME" Version="[9.0,99.9]"/>
+    </HostList>
+    <LocaleList>
+      <Locale Code="All"/>
+    </LocaleList>
+    <RequiredRuntimeList>
+      <RequiredRuntime Name="CSXS" Version="6.0"/>
+    </RequiredRuntimeList>
+  </ExecutionEnvironment>
+  <DispatchInfoList>
+    <Extension Id="com.everett.hdrhint.panel">
+      <DispatchInfo>
+        <Resources>
+          <MainPath>./index.html</MainPath>
+          <ScriptPath>./jsx/host.jsx</ScriptPath>
+          <CEFCommandLine>
+            <Parameter>--enable-nodejs</Parameter>
+            <Parameter>--mixed-context</Parameter>
+          </CEFCommandLine>
+        </Resources>
+        <Lifecycle>
+          <AutoVisible>true</AutoVisible>
+        </Lifecycle>
+        <UI>
+          <Type>Panel</Type>
+          <Menu>HDR Hint</Menu>
+          <Geometry>
+            <Size>
+              <Width>440</Width>
+              <Height>600</Height>
+            </Size>
+            <MinSize>
+              <Width>280</Width>
+              <Height>160</Height>
+            </MinSize>
+            <MaxSize>
+              <Width>4096</Width>
+              <Height>4096</Height>
+            </MaxSize>
+          </Geometry>
+          <Icons>
+            <Icon Type="Normal">./icons/hdrhint_23.png</Icon>
+            <Icon Type="RollOver">./icons/hdrhint_23_rollover.png</Icon>
+            <Icon Type="DarkNormal">./icons/hdrhint_23_dark.png</Icon>
+            <Icon Type="DarkRollOver">./icons/hdrhint_23_dark_rollover.png</Icon>
+          </Icons>
+        </UI>
+      </DispatchInfo>
+    </Extension>
+  </DispatchInfoList>
+</ExtensionManifest>

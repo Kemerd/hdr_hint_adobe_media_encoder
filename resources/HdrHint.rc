@@ -1,0 +1,41 @@
+// ---------------------------------------------------------------------------
+// HdrHint resources: icon, version block and the embedded export guide.
+// The application manifest is NOT embedded here (see CMakeLists.txt).
+// ---------------------------------------------------------------------------
+#include <windows.h>
+#include "resource.h"
+
+IDI_APP_ICON        ICON    "HdrHint.ico"
+
+// The export guide (markdown) is embedded so the in-app Guide tab works even
+// when the exe is copied around without its docs folder.
+IDR_GUIDE_MARKDOWN  RCDATA  "guide.md"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    1,0,0,0
+ PRODUCTVERSION 1,0,0,0
+ FILEFLAGSMASK  VS_FFI_FILEFLAGSMASK
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName",      "Everett Engineers"
+            VALUE "FileDescription",  "HDR Hint - companion for Adobe Media Encoder"
+            VALUE "FileVersion",      "1.0.0.0"
+            VALUE "InternalName",     "HdrHint"
+            VALUE "LegalCopyright",   "Copyright (C) 2026"
+            VALUE "OriginalFilename", "HdrHint.exe"
+            VALUE "ProductName",      "HDR Hint"
+            VALUE "ProductVersion",   "1.0.0.0"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
