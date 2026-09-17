@@ -53,7 +53,7 @@ are shown and skipped. Failed exports show AME's own reason.
 
 - Windows 10 / 11. Mica needs Windows 11 22H2; older builds get a solid background.
 - [MKVToolNix](https://mkvtoolnix.download/) 15 or newer (`mkvmerge.exe`, auto-detected in `Program Files`).
-- Adobe Media Encoder 2019 or newer. Developed and tested against AME 2026 (26.2.2).
+- Adobe Media Encoder 2019 or newer, **optional**: without it HDR Hint runs as a watch-folder tool. Developed and tested against AME 2026 (26.2.2).
 - Optional: `ffprobe` on `PATH` or in `C:\ffmpeg\bin`, for colour-space detection of files that never touched AME's log.
 - To build: Visual Studio 2022 (MSVC v143), CMake 3.24+, Windows SDK 10.0.22621 or newer.
 
@@ -67,6 +67,25 @@ pwsh scripts/build.ps1                      # configure, build Release, run the 
 
 The app is `build\Release\HdrHint.exe`. It ships its LUTs (`luts\`), the CEP panel (`cep\`)
 and the guide (`GUIDE.md`) next to itself.
+
+### Standalone: just watch folders
+
+HDR Hint does not need Adobe software. It watches whatever folders you list and
+processes any new video that appears, which is enough on its own if you export from
+DaVinci, Handbrake, OBS or anything else.
+
+```powershell
+pwsh scripts/install_standalone.ps1 -WatchFolder "D:\Renders" -StartWithWindows -Launch
+```
+
+That copies the built app to `%LOCALAPPDATA%\Programs\HdrHint` (so rebuilding or moving
+this repo never breaks the install), adds a Start Menu shortcut, and optionally starts it
+into the tray at logon. `-Uninstall` reverses all of it. Nothing is registered as a
+service and nothing is written outside your own user account.
+
+Settings has separate switches for the two triggers, **From Media Encoder** and
+**From watch folders**, so you can run either half on its own. A file seen by both is
+still only processed once: every trigger resolves to the same job.
 
 ### Let Media Encoder run it
 

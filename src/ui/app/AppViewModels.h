@@ -134,6 +134,8 @@ public:
     void addWatchFolder() override;
     void removeWatchFolder(const std::wstring& folder) override;
     void setAutoProcess(bool on) override;
+    void setAutoProcessAme(bool on) override;
+    void setAutoProcessWatched(bool on) override;
     void setRecycleOriginal(bool on) override;
     void setDockInsideAme(bool on) override;
     void setAlwaysOnTop(bool on) override;
@@ -141,6 +143,7 @@ public:
     void setStartMinimized(bool on) override;
     void setStartWithWindows(bool on) override;
     void setQuitWithAme(bool on) override;
+    void setShowOnAmeLaunch(bool on) override;
     void setAppearance(int mode) override;
     void setAccent(int mode) override;
     void setReduceTransparency(bool on) override;

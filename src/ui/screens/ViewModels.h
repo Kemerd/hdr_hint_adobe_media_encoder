@@ -87,6 +87,8 @@ struct SettingsView {
     bool attachLutByDefault = true;
     std::vector<std::wstring> watchFolders;
     bool autoProcess = true;
+    bool autoProcessAme = true;
+    bool autoProcessWatched = true;
     bool recycleOriginal = true;
     bool dockInsideAme = true;
     bool alwaysOnTop = true;
@@ -94,6 +96,7 @@ struct SettingsView {
     bool startMinimized = false;
     bool startWithWindows = false;
     bool quitWithAme = true;
+    bool showOnAmeLaunch = true;
     int appearance = 0;             ///< 0 system, 1 dark, 2 light
     int accent = 0;                 ///< 0 blue, 1 system
     bool reduceTransparency = false;
@@ -119,6 +122,8 @@ public:
     virtual void addWatchFolder() = 0;          ///< opens a folder picker
     virtual void removeWatchFolder(const std::wstring& folder) = 0;
     virtual void setAutoProcess(bool on) = 0;
+    virtual void setAutoProcessAme(bool on) = 0;
+    virtual void setAutoProcessWatched(bool on) = 0;
     virtual void setRecycleOriginal(bool on) = 0;
     virtual void setDockInsideAme(bool on) = 0;
     virtual void setAlwaysOnTop(bool on) = 0;
@@ -126,6 +131,7 @@ public:
     virtual void setStartMinimized(bool on) = 0;
     virtual void setStartWithWindows(bool on) = 0;
     virtual void setQuitWithAme(bool on) = 0;
+    virtual void setShowOnAmeLaunch(bool on) = 0;
     virtual void setAppearance(int mode) = 0;
     virtual void setAccent(int mode) = 0;
     virtual void setReduceTransparency(bool on) = 0;

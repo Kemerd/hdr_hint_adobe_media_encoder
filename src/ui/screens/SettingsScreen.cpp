@@ -403,6 +403,12 @@ void SettingsScreen::buildBehaviour()
     if (!group) return;
 
     autoProcess_ = addToggleRow(group, L"Auto-process new exports", L"", [this](bool on) { vm_.setAutoProcess(on); });
+    autoProcessAme_ = addToggleRow(group, L"From Media Encoder",
+                                   L"Exports Media Encoder reports as finished",
+                                   [this](bool on) { vm_.setAutoProcessAme(on); });
+    autoProcessWatched_ = addToggleRow(group, L"From watch folders",
+                                       L"Any new video that appears in a folder below",
+                                       [this](bool on) { vm_.setAutoProcessWatched(on); });
     recycle_ = addToggleRow(group, L"Move original to Recycle Bin after success", L"",
                             [this](bool on) { vm_.setRecycleOriginal(on); });
     dock_ = addToggleRow(group, L"Dock inside Media Encoder",
@@ -414,6 +420,9 @@ void SettingsScreen::buildBehaviour()
     startWithWindows_ = addToggleRow(group, L"Start with Windows",
                                      L"Only needed if Media Encoder does not start HDR Hint itself",
                                      [this](bool on) { vm_.setStartWithWindows(on); });
+    showOnAmeLaunch_ = addToggleRow(group, L"Open when Media Encoder starts",
+                                    L"Off: waits in the tray until you open the panel",
+                                    [this](bool on) { vm_.setShowOnAmeLaunch(on); });
     quitWithAme_ = addToggleRow(group, L"Quit when Media Encoder quits", L"", [this](bool on) { vm_.setQuitWithAme(on); });
 
     // Appearance: System / Dark / Light with fixed-width segments.
@@ -538,12 +547,15 @@ void SettingsScreen::applyBehaviour(const SettingsView& view)
         if (toggle && toggle->isOn() != on) toggle->setOn(on);
     };
     sync(autoProcess_, view.autoProcess);
+    sync(autoProcessAme_, view.autoProcessAme);
+    sync(autoProcessWatched_, view.autoProcessWatched);
     sync(recycle_, view.recycleOriginal);
     sync(dock_, view.dockInsideAme);
     sync(alwaysOnTop_, view.alwaysOnTop);
     sync(minimizeToTray_, view.minimizeToTray);
     sync(startMinimized_, view.startMinimized);
     sync(startWithWindows_, view.startWithWindows);
+    sync(showOnAmeLaunch_, view.showOnAmeLaunch);
     sync(quitWithAme_, view.quitWithAme);
     sync(reduceTransparency_, view.reduceTransparency);
 

@@ -26,6 +26,7 @@ struct Settings {
     bool startMinimized = false;
     bool startWithWindows = false;             ///< HKCU Run entry; off by default - Media Encoder's startup script launches the app instead
     bool quitWithAme = true;                   ///< when launched from the panel
+    bool showOnAmeLaunch = true;               ///< show the window when Media Encoder starts us
     bool reduceTransparency = false;
     std::wstring floatingPlacement;            ///< "x,y,w,h,dpi,max" (px) or empty
     std::wstring dockTarget;                   ///< picked AME panel, "l,t,w,h" relative to AME's client area
@@ -85,6 +86,10 @@ struct Settings {
 
     // [jobs]
     bool autoProcess = true;
+    /// Auto-process exports Media Encoder told us about (its log, or the panel).
+    bool autoProcessAme = true;
+    /// Auto-process files that simply appeared in a watch folder.
+    bool autoProcessWatched = true;
     std::wstring sdrPolicy = L"skip";          ///< skip | tag_sdr | hold
     bool holdWhenTransferUnknown = true;
     int historyMax = 500;

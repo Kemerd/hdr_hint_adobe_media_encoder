@@ -136,7 +136,7 @@ hdr_hint_adobe_media_encoder/
   third_party/nlohmann/          json.hpp 3.11.3 + LICENSE.MIT
   cep/com.everett.hdrhint/       CSXS/manifest.xml, .debug, index.html, css/panel.css, js/CSInterface.js, js/panel.js, jsx/host.jsx, jsx/json2.js, icons/
   cep/startup/HdrHintLauncher.jsx AME Scripts\Startup script: launches the exe when Media Encoder starts
-  scripts/                       check_tu.ps1, install_panel.ps1, uninstall_panel.ps1, install_startup.ps1, make_test_hdr_mp4.ps1, simulate_ame_export.ps1, screenshot.ps1
+  scripts/                       check_tu.ps1, install_panel.ps1, uninstall_panel.ps1, install_startup.ps1, install_standalone.ps1, make_test_hdr_mp4.ps1, simulate_ame_export.ps1, screenshot.ps1
   src/main.cpp                   wWinMain: job-object breakaway → single instance → logger → settings → engine → UI → loop → ordered shutdown
   src/platform/                  Win.h, Handle.h, Utf.h, KnownFolders.h, FileIo.h, DirectoryWatch.h, Process.h, RecycleBin.h, Registry.h,
                                  SingleInstance.h, NamedPipe.h, Time.h, WinVersion.h

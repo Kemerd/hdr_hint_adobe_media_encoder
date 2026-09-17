@@ -250,6 +250,7 @@ Result<void> Settings::load(const std::wstring& path) {
     readBool(ini, kApp, L"start_minimized", startMinimized);
     readBool(ini, kApp, L"start_with_windows", startWithWindows);
     readBool(ini, kApp, L"quit_with_ame", quitWithAme);
+    readBool(ini, kApp, L"show_on_ame_launch", showOnAmeLaunch);
     readBool(ini, kApp, L"reduce_transparency", reduceTransparency);
     readString(ini, kApp, L"floating_placement", floatingPlacement);
     readString(ini, kApp, L"dock_target", dockTarget);
@@ -331,6 +332,8 @@ Result<void> Settings::load(const std::wstring& path) {
 
     // [jobs]
     readBool(ini, kJobs, L"auto_process", autoProcess);
+    readBool(ini, kJobs, L"auto_process_ame", autoProcessAme);
+    readBool(ini, kJobs, L"auto_process_watched", autoProcessWatched);
     readEnum(ini, kJobs, L"sdr_policy", sdrPolicy, {L"skip", L"tag_sdr", L"hold"});
     readBool(ini, kJobs, L"hold_when_transfer_unknown", holdWhenTransferUnknown);
     readInt(ini, kJobs, L"history_max", historyMax, 10, 100000);
@@ -399,6 +402,7 @@ Result<void> Settings::save(const std::wstring& path) const {
     ini.setBool(kApp, L"start_minimized", startMinimized);
     ini.setBool(kApp, L"start_with_windows", startWithWindows);
     ini.setBool(kApp, L"quit_with_ame", quitWithAme);
+    ini.setBool(kApp, L"show_on_ame_launch", showOnAmeLaunch);
     ini.setBool(kApp, L"reduce_transparency", reduceTransparency);
     ini.set(kApp, L"floating_placement", floatingPlacement);
     ini.set(kApp, L"dock_target", dockTarget);
@@ -465,6 +469,8 @@ Result<void> Settings::save(const std::wstring& path) const {
 
     // [jobs]
     ini.setBool(kJobs, L"auto_process", autoProcess);
+    ini.setBool(kJobs, L"auto_process_ame", autoProcessAme);
+    ini.setBool(kJobs, L"auto_process_watched", autoProcessWatched);
     ini.set(kJobs, L"sdr_policy", sdrPolicy);
     ini.setBool(kJobs, L"hold_when_transfer_unknown", holdWhenTransferUnknown);
     ini.setInt(kJobs, L"history_max", historyMax);

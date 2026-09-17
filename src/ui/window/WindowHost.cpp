@@ -680,6 +680,13 @@ void WindowHost::setMode(WindowMode mode, HWND owner, const RECT& dockBoundsPx) 
         if (popup_ && popup_->visible()) {
             popup_->dismiss();
         }
+        // A minimized window cannot be moved or resized: SetWindowPos updates
+        // the restored placement instead and the panel would sit at the old
+        // size until something restored it by hand. Leave the icon first.
+        if (::IsIconic(hwnd_)) {
+            HH_LOG_DEBUG(kLog, L"docking a minimized window; restoring it first");
+            ::ShowWindow(hwnd_, SW_RESTORE);
+        }
         ::ShowWindow(hwnd_, SW_HIDE);
         if (mode_ == WindowMode::Floating) {
             floatingPlacement_ = placementString();
@@ -723,6 +730,15 @@ void WindowHost::setMode(WindowMode mode, HWND owner, const RECT& dockBoundsPx) 
         renderFrame();
         if (dockVisible_) {
             ::ShowWindow(hwnd_, SW_SHOWNOACTIVATE);
+        }
+        // Windows can refuse a resize (minimized, a modal size-move loop); say
+        // so loudly rather than leaving a wrongly sized panel on screen.
+        if (RECT dbg{}; ::GetWindowRect(hwnd_, &dbg)) {
+            const int gotW = dbg.right - dbg.left;
+            const int gotH = dbg.bottom - dbg.top;
+            if (gotW != w || gotH != h) {
+                HH_LOG_WARN(kLog, L"docked window is {}x{} but {}x{} was requested", gotW, gotH, w, h);
+            }
         }
         return;
     }
@@ -789,12 +805,29 @@ void WindowHost::setDockBounds(const RECT& px) {
     }
     const int w = std::max<LONG>(1, px.right - px.left);
     const int h = std::max<LONG>(1, px.bottom - px.top);
+
+    // Minimized: restore before moving, for the reason above.
+    if (::IsIconic(hwnd_)) {
+        HH_LOG_DEBUG(kLog, L"setDockBounds on a minimized window; restoring it first");
+        ::ShowWindow(hwnd_, SW_RESTORE);
+    }
+
+    // Trust the window, not the bookkeeping: if the last resize was refused
+    // (minimized, a pending size-move loop) the recorded bounds would match
+    // while the window is still the wrong size, and SWP_NOSIZE would keep it
+    // that way forever.
+    bool mustSize = sizeChanged;
+    if (!mustSize) {
+        if (RECT actual{}; ::GetWindowRect(hwnd_, &actual)) {
+            mustSize = (actual.right - actual.left) != w || (actual.bottom - actual.top) != h;
+        }
+    }
     UINT flags = SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER;
-    if (!sizeChanged) {
+    if (!mustSize) {
         flags |= SWP_NOSIZE;
     }
     ::SetWindowPos(hwnd_, nullptr, px.left, px.top, w, h, flags);
-    if (sizeChanged) {
+    if (mustSize) {
         // WM_SIZE already resized and rendered; this is the belt for the case
         // where the message was swallowed (hidden window).
         RECT rc{};
@@ -1937,13 +1970,9 @@ LRESULT WindowHost::handle(UINT msg, WPARAM wp, LPARAM lp) {
             button = MouseButton::Middle;
         }
         const bool dbl = (msg == WM_LBUTTONDBLCLK || msg == WM_RBUTTONDBLCLK || msg == WM_MBUTTONDBLCLK);
-        HH_LOG_DEBUG(kLog, L"button down {} at {},{} (mode {}, capture {:#x}, foreground {:#x})", static_cast<int>(button),
-                     GET_X_LPARAM(lp), GET_Y_LPARAM(lp), mode_ == WindowMode::Docked ? L"docked" : L"floating",
-                     reinterpret_cast<uintptr_t>(::GetCapture()), reinterpret_cast<uintptr_t>(::GetForegroundWindow()));
         if (root_) {
             root_->dispatchMouseDown(toRoot(lp), button, modifiersNow(), dbl ? 2 : 1);
         }
-        HH_LOG_DEBUG(kLog, L"button down handled; capture now {:#x}", reinterpret_cast<uintptr_t>(::GetCapture()));
         // Robustness: a popup that survived the root's dismissal closes when
         // the click was outside it.
         if (popup_ && popup_->visible()) {
@@ -1963,8 +1992,6 @@ LRESULT WindowHost::handle(UINT msg, WPARAM wp, LPARAM lp) {
         } else if (msg == WM_MBUTTONUP) {
             button = MouseButton::Middle;
         }
-        HH_LOG_DEBUG(kLog, L"button up {} at {},{} (capture {:#x})", static_cast<int>(button), GET_X_LPARAM(lp), GET_Y_LPARAM(lp),
-                     reinterpret_cast<uintptr_t>(::GetCapture()));
         if (root_) {
             root_->dispatchMouseUp(toRoot(lp), button, modifiersNow());
         }
@@ -2041,7 +2068,6 @@ LRESULT WindowHost::handle(UINT msg, WPARAM wp, LPARAM lp) {
     // ---- activation / capture ---------------------------------------------
     case WM_ACTIVATE: {
         const bool active = LOWORD(wp) != WA_INACTIVE;
-        HH_LOG_DEBUG(kLog, L"WM_ACTIVATE {} (other {:#x})", LOWORD(wp), static_cast<uintptr_t>(lp));
         if (root_) {
             root_->setWindowActive(active);
             if (!active) {
@@ -2083,7 +2109,6 @@ LRESULT WindowHost::handle(UINT msg, WPARAM wp, LPARAM lp) {
         return 0;
 
     case WM_CANCELMODE:
-        HH_LOG_DEBUG(kLog, L"WM_CANCELMODE");
         if (root_) {
             root_->cancelInteraction();
         }
@@ -2092,7 +2117,6 @@ LRESULT WindowHost::handle(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_CAPTURECHANGED: {
         const HWND gaining = reinterpret_cast<HWND>(lp);
         const bool selfRelease = ::GetPropW(hwnd_, kPropReleasingCapture) != nullptr;
-        HH_LOG_DEBUG(kLog, L"WM_CAPTURECHANGED gaining {:#x} selfRelease {}", reinterpret_cast<uintptr_t>(gaining), selfRelease);
         const bool toPopup = popup_ && gaining != nullptr && gaining == popup_->hwnd();
         if (gaining != hwnd_ && !selfRelease && !toPopup && root_) {
             root_->cancelInteraction();

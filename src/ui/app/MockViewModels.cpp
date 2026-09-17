@@ -627,6 +627,8 @@ SettingsView MockSettingsViewModel::sampleView() {
     v.watchFolders = {kExportFolder, L"D:\\Exports\\Client Deliveries"};
     // Behaviour.
     v.autoProcess = true;
+    v.autoProcessAme = true;
+    v.autoProcessWatched = true;
     v.recycleOriginal = true;
     v.dockInsideAme = true;
     v.alwaysOnTop = true;
@@ -634,6 +636,7 @@ SettingsView MockSettingsViewModel::sampleView() {
     v.startMinimized = false;
     v.startWithWindows = false;
     v.quitWithAme = true;
+    v.showOnAmeLaunch = true;
     v.appearance = 0;
     v.accent = 0;
     v.reduceTransparency = false;
@@ -779,6 +782,16 @@ void MockSettingsViewModel::setAutoProcess(bool on) {
     notify();
 }
 
+void MockSettingsViewModel::setAutoProcessAme(bool on) {
+    view_.autoProcessAme = on;
+    notify();
+}
+
+void MockSettingsViewModel::setAutoProcessWatched(bool on) {
+    view_.autoProcessWatched = on;
+    notify();
+}
+
 void MockSettingsViewModel::setRecycleOriginal(bool on) {
     view_.recycleOriginal = on;
     notify();
@@ -806,6 +819,11 @@ void MockSettingsViewModel::setStartMinimized(bool on) {
 
 void MockSettingsViewModel::setStartWithWindows(bool on) {
     view_.startWithWindows = on;
+    notify();
+}
+
+void MockSettingsViewModel::setShowOnAmeLaunch(bool on) {
+    view_.showOnAmeLaunch = on;
     notify();
 }
 

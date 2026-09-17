@@ -1507,12 +1507,41 @@ void Engine::onReady(Job& job) {
         transition(job, JobState::Held, kReasonInbandHold);
         return;
     }
-    // User hold / manual mode.
-    if (!forced && (job.overrides.hold || !settings_.autoProcess)) {
+    // User hold / manual mode. Auto-processing is off globally, or off for
+    // the trigger that found this file: a job is only ever created once (the
+    // store dedupes every source onto one normalised path), so the source
+    // recorded on the job is the one that discovered it first.
+    if (!forced && (job.overrides.hold || !settings_.autoProcess || !autoProcessAllowed(job))) {
         transition(job, JobState::Held, kReasonWaiting);
         return;
     }
     dispatch(job);
+}
+
+/**
+ * @brief Whether the trigger that found this job may process it unattended.
+ *
+ * Two independent switches, so a user who only wants folder watching can turn
+ * the Media Encoder side off and vice versa. A file is only ever one job (the
+ * store dedupes every trigger onto one normalised output path), so the source
+ * stored on the job is whichever trigger saw it first and there is no risk of
+ * a file being processed twice because it matched both.
+ *
+ * Manual, catch-up and re-run jobs are the user asking directly: those are
+ * never gated here.
+ */
+bool Engine::autoProcessAllowed(const Job& job) const {
+    switch (job.source) {
+    case JobSource::Log:
+    case JobSource::Cep:
+        return settings_.autoProcessAme;
+    case JobSource::Folder:
+        return settings_.autoProcessWatched;
+    case JobSource::Manual:
+    case JobSource::CatchUp:
+    default:
+        return true;
+    }
 }
 
 /**

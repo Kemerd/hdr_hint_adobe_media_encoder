@@ -84,6 +84,8 @@ private:
 
     // Behaviour
     ToggleSwitch* autoProcess_ = nullptr;
+    ToggleSwitch* autoProcessAme_ = nullptr;
+    ToggleSwitch* autoProcessWatched_ = nullptr;
     ToggleSwitch* recycle_ = nullptr;
     ToggleSwitch* dock_ = nullptr;
     ToggleSwitch* alwaysOnTop_ = nullptr;
@@ -91,6 +93,7 @@ private:
     ToggleSwitch* startMinimized_ = nullptr;
     ToggleSwitch* startWithWindows_ = nullptr;
     ToggleSwitch* quitWithAme_ = nullptr;
+    ToggleSwitch* showOnAmeLaunch_ = nullptr;
     SegmentedControl* appearance_ = nullptr;
     SegmentedControl* accent_ = nullptr;
     ToggleSwitch* reduceTransparency_ = nullptr;

@@ -146,6 +146,8 @@ private:
     void transition(Job& job, JobState state, std::wstring reason = {});
     void onReady(Job& job);
     void dispatch(Job& job);
+    /// True when the trigger that discovered @p job may process it unattended.
+    [[nodiscard]] bool autoProcessAllowed(const Job& job) const;
     void finishDone(Job& job, MuxEvent& e);
     void maybeRecycle(Job& job);
     void inferTransfer(Job& job, TransferKind kind, const wchar_t* source);

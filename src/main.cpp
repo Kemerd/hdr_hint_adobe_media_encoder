@@ -861,7 +861,13 @@ int App::run() {
         }
     }
 
-    if (!args_.tray && !settings_.startMinimized) { showWindow(!args_.fromPanel); }
+    // Media Encoder started us: show the window unless the user asked for a
+    // quiet tray start. It floats until the HDR Hint panel is opened, then
+    // docks onto it; --tray on its own (a logon start) stays hidden.
+    const bool ameLaunchedUs = args_.fromPanel && settings_.showOnAmeLaunch && !settings_.startMinimized;
+    if ((!args_.tray && !settings_.startMinimized) || ameLaunchedUs) {
+        showWindow(!args_.fromPanel);
+    }
 
     // No tick override here: wireWindow() already installed the 1 Hz tick
     // (engine housekeeping, dock re-search, placement memory). Passing a

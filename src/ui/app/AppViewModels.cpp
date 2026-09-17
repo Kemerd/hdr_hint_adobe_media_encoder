@@ -713,6 +713,8 @@ SettingsView AppSettingsViewModel::view() const {
 
     // Behaviour.
     v.autoProcess = settings_.autoProcess;
+    v.autoProcessAme = settings_.autoProcessAme;
+    v.autoProcessWatched = settings_.autoProcessWatched;
     v.recycleOriginal = !platform::iequals(settings_.recycleMode, L"never");
     v.dockInsideAme = !platform::iequals(settings_.dockMode, L"floating");
     v.alwaysOnTop = settings_.floatingAlwaysOnTop;
@@ -720,6 +722,7 @@ SettingsView AppSettingsViewModel::view() const {
     v.startMinimized = settings_.startMinimized;
     v.startWithWindows = settings_.startWithWindows;
     v.quitWithAme = settings_.quitWithAme;
+    v.showOnAmeLaunch = settings_.showOnAmeLaunch;
     v.appearance = appearanceIndexFor(settings_.theme);
     v.accent = accentIndexFor(settings_.accent);
     v.reduceTransparency = settings_.reduceTransparency;
@@ -1017,6 +1020,24 @@ void AppSettingsViewModel::setAutoProcess(bool on) {
     notify();
 }
 
+void AppSettingsViewModel::setAutoProcessAme(bool on) {
+    if (settings_.autoProcessAme == on) {
+        return;
+    }
+    settings_.autoProcessAme = on;
+    HH_LOG_INFO(kLog, L"auto-process from Media Encoder {}", on ? L"on" : L"off");
+    commit();
+}
+
+void AppSettingsViewModel::setAutoProcessWatched(bool on) {
+    if (settings_.autoProcessWatched == on) {
+        return;
+    }
+    settings_.autoProcessWatched = on;
+    HH_LOG_INFO(kLog, L"auto-process from watch folders {}", on ? L"on" : L"off");
+    commit();
+}
+
 void AppSettingsViewModel::setRecycleOriginal(bool on) {
     const std::wstring mode = on ? L"auto" : L"never";
     if (platform::iequals(settings_.recycleMode, mode)) {
@@ -1084,6 +1105,15 @@ void AppSettingsViewModel::setStartWithWindows(bool on) {
     if (onWindowBehaviourChanged) {
         onWindowBehaviourChanged();
     }
+}
+
+void AppSettingsViewModel::setShowOnAmeLaunch(bool on) {
+    if (settings_.showOnAmeLaunch == on) {
+        return;
+    }
+    settings_.showOnAmeLaunch = on;
+    persist();
+    notify();
 }
 
 void AppSettingsViewModel::setQuitWithAme(bool on) {
