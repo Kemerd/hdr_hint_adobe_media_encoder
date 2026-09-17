@@ -34,6 +34,7 @@ public:
     void paintOverlay(Canvas& c) override;
     Widget* hitTest(Point local) override;
     [[nodiscard]] bool interactive() const override { return true; }
+    [[nodiscard]] bool wantsPointerAt(Point local) const override;
     bool onWheel(const WheelEvent& e) override;
     bool onMouseDown(const MouseEvent& e) override;
     bool onMouseUp(const MouseEvent& e) override;

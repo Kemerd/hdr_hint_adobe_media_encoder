@@ -1658,7 +1658,13 @@ LRESULT WindowHost::onNcHitTest(LPARAM lp) {
     const int w = rc.right - rc.left;
     const int h = rc.bottom - rc.top;
 
-    if (!::IsZoomed(hwnd_)) {
+    // A control drawn inside the resize band (the overlay scrollbar) gets the
+    // point first: the frame would otherwise swallow the press and the bar
+    // could never be dragged.
+    const Point hitDips{scale_.toDip(static_cast<float>(pt.x)), scale_.toDip(static_cast<float>(pt.y))};
+    const bool widgetClaims = root_ && root_->wantsPointerAt(hitDips);
+
+    if (!::IsZoomed(hwnd_) && !widgetClaims) {
         // System frame width in px for the edges, 16 dip squares for corners.
         const UINT dpi = ::GetDpiForWindow(hwnd_);
         const int frame = ::GetSystemMetricsForDpi(SM_CXSIZEFRAME, dpi) + ::GetSystemMetricsForDpi(SM_CXPADDEDBORDER, dpi);

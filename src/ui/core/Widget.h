@@ -80,6 +80,16 @@ public:
     virtual bool hitTestSelf(Point local) const;
     /// Widgets that only pass events through (containers) return false here.
     [[nodiscard]] virtual bool interactive() const { return false; }
+    /**
+     * @brief True when this widget needs the pointer at @p local even though the
+     *        window would treat that point as a resize border.
+     *
+     * A borderless window claims a few pixels along each edge for resizing, and
+     * Windows routes those to the frame before the client ever sees a click.
+     * Anything drawn in that band (an overlay scrollbar, for instance) has to
+     * say so here or it can be looked at but never touched.
+     */
+    [[nodiscard]] virtual bool wantsPointerAt(Point local) const { (void)local; return false; }
 
     virtual bool onMouseDown(const MouseEvent&) { return false; }
     virtual bool onMouseUp(const MouseEvent&) { return false; }

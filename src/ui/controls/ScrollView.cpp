@@ -70,6 +70,9 @@ constexpr float kBarInset = 2.0f;
 constexpr float kThumbMinHeight = 24.0f;
 /// Hovering this close to the right edge widens the bar and shows the track.
 constexpr float kBarHoverZone = 12.0f;
+/// Kept clear at the top and bottom of the bar so the window's resize
+/// corners stay grabbable even when a scrollbar runs the full height.
+constexpr float kResizeCornerGuard = 16.0f;
 constexpr double kBarHideDelaySec = 0.8;
 constexpr float kTrackAlpha = 0.06f;
 /// Thumb opacity at rest. The bar never disappears completely while there
@@ -699,6 +702,31 @@ Rect ScrollView::thumbRect() const {
 
     const float w = (barHover_ || draggingThumb_) ? kBarWidthHover : kBarWidth;
     return {b.w - kBarInset - w, y, w, thumbH};
+}
+
+/**
+ * @brief Claims the scrollbar strip from the window's resize border.
+ *
+ * The bar is drawn a couple of dip in from the right edge, which is inside the
+ * band a borderless window reserves for horizontal resizing. Without this the
+ * frame eats every press on the thumb and the bar can only be looked at.
+ */
+bool ScrollView::wantsPointerAt(Point local) const {
+    if (maxOffset_ <= 0.0f || !nearRightEdge(local)) {
+        return false;
+    }
+    // Never take the resize corners: the bar runs the full height, and a user
+    // who cannot grab the bottom-right corner of the window would rightly be
+    // annoyed. Only the thumb itself is worth stealing a few pixels for.
+    const Rect thumb = thumbRect();
+    if (thumb.isEmpty()) {
+        return false;
+    }
+    const float corner = kResizeCornerGuard;
+    if (local.y < corner || local.y > frame_.h - corner) {
+        return false;
+    }
+    return true;
 }
 
 /**

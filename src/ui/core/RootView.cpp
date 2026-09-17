@@ -560,6 +560,22 @@ ChromeHit RootView::chromeHitTest(Point rootPt) const {
     return chrome_ ? chrome_->chromeHitTest(rootPt) : ChromeHit::None;
 }
 
+/**
+ * @brief Asks the widget under @p rootPt whether it needs the pointer there.
+ *
+ * Used by the window's non-client hit test: a control drawn inside the resize
+ * band (the overlay scrollbar) would otherwise be unclickable, because the
+ * frame swallows those points before any client message is generated.
+ */
+bool RootView::wantsPointerAt(Point rootPt) {
+    for (Widget* w = hitAtRoot(rootPt); w != nullptr; w = w->parent()) {
+        if (w->wantsPointerAt(w->fromRoot(rootPt))) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // ---------------------------------------------------------------------------
 // notifications
 // ---------------------------------------------------------------------------

@@ -77,6 +77,9 @@ public:
 
     /// Chrome hit-test for WM_NCHITTEST (None when no provider).
     [[nodiscard]] ChromeHit chromeHitTest(Point rootPt) const;
+    /// True when the widget under @p rootPt needs the pointer there, so the
+    /// window must not hand that point to its resize border.
+    [[nodiscard]] bool wantsPointerAt(Point rootPt);
     [[nodiscard]] IChromeProvider* chromeProvider() const noexcept { return chrome_; }
 
     /// Global shortcuts handled before widgets (registered by the app shell).
