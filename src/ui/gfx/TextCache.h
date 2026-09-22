@@ -59,6 +59,12 @@ public:
     void init();
 #endif
     void shutdown();
+    /// True once init() succeeded, i.e. real layouts can be built.
+#if defined(_WIN32)
+    [[nodiscard]] bool ready() const noexcept { return factory_ != nullptr; }
+#else
+    [[nodiscard]] bool ready() const noexcept { return initialised_; }
+#endif
 
     /// The resolved family name for a style family.
     [[nodiscard]] const std::wstring& familyName(TextStyle::Family f) const;

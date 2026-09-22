@@ -100,7 +100,7 @@ NSString* ns(std::wstring_view text) {
 }
 
 /// NSString -> wide (NFC, the engine's path form).
-std::wstring wide(NSString* s) {
+std::wstring wideString(NSString* s) {
     if (s == nil) {
         return {};
     }
@@ -613,7 +613,7 @@ void App::applyStartAtLogin() {
                 return;
             }
             if (![service registerAndReturnError:&error]) {
-                HH_LOG_WARN(kLog, L"open at login: register failed: {}", wide(error.localizedDescription));
+                HH_LOG_WARN(kLog, L"open at login: register failed: {}", wideString(error.localizedDescription));
             } else {
                 HH_LOG_INFO(kLog, L"open at login: enabled");
             }
@@ -621,7 +621,7 @@ void App::applyStartAtLogin() {
         }
         if (service.status == SMAppServiceStatusEnabled || service.status == SMAppServiceStatusRequiresApproval) {
             if (![service unregisterAndReturnError:&error]) {
-                HH_LOG_WARN(kLog, L"open at login: unregister failed: {}", wide(error.localizedDescription));
+                HH_LOG_WARN(kLog, L"open at login: unregister failed: {}", wideString(error.localizedDescription));
             } else {
                 HH_LOG_INFO(kLog, L"open at login: disabled");
             }
@@ -756,7 +756,7 @@ void App::addFilesDialog() {
             return;
         }
         for (NSURL* url in panel.URLs) {
-            if (url.isFileURL) { engine_->addManualFile(wide(url.path)); }
+            if (url.isFileURL) { engine_->addManualFile(wideString(url.path)); }
         }
     }
     showWindow(true);
@@ -1089,7 +1089,7 @@ bool App::startGui() {
 - (void)application:(NSApplication*)application openURLs:(NSArray<NSURL*>*)urls {
     std::vector<std::wstring> paths;
     for (NSURL* url in urls) {
-        if (url.isFileURL) { paths.push_back(wide(url.path)); }
+        if (url.isFileURL) { paths.push_back(wideString(url.path)); }
     }
     if (!paths.empty() && app_->guiStarted()) {
         app_->openFiles(paths);

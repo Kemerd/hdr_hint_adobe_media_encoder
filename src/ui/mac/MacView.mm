@@ -458,12 +458,11 @@ void RepeatingTimer::stop() {
 // HHCanvasView
 // ===========================================================================
 
+// MacTypes.h owns the global Point / Rect / Size: spell the toolkit's out.
+namespace hui = hh::ui;
 using hh::ui::CursorKind;
 using hh::ui::Modifiers;
 using hh::ui::MouseButton;
-using hh::ui::Point;
-using hh::ui::Rect;
-using hh::ui::Size;
 
 @implementation HHCanvasView {
     hh::ui::mac::IViewSink* sink_;           ///< not owned; nil after detachSink
@@ -536,7 +535,7 @@ using hh::ui::Size;
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
     if (sink_ != nullptr) {
-        sink_->viewResized(Size{static_cast<float>(size.width), static_cast<float>(size.height)});
+        sink_->viewResized(hui::Size{static_cast<float>(size.width), static_cast<float>(size.height)});
     }
 }
 
@@ -559,7 +558,7 @@ using hh::ui::Size;
         return;
     }
     const NSSize size = self.bounds.size;
-    sink_->viewDraw(ctx, Size{static_cast<float>(size.width), static_cast<float>(size.height)});
+    sink_->viewDraw(ctx, hui::Size{static_cast<float>(size.width), static_cast<float>(size.height)});
 }
 
 // ---- cursor -------------------------------------------------------------------------
@@ -587,9 +586,9 @@ using hh::ui::Size;
 // ---- pointer --------------------------------------------------------------------------
 
 /// Event location in view (= root dip) coordinates.
-- (Point)pointFor:(NSEvent*)event {
+- (hui::Point)pointFor:(NSEvent*)event {
     const NSPoint p = [self convertPoint:event.locationInWindow fromView:nil];
-    return Point{static_cast<float>(p.x), static_cast<float>(p.y)};
+    return hui::Point{static_cast<float>(p.x), static_cast<float>(p.y)};
 }
 
 /// WM_xBUTTONDOWN (1) vs WM_xBUTTONDBLCLK (2): every second click is a double.
@@ -851,7 +850,7 @@ using hh::ui::Size;
         return NSZeroRect;
     }
     // The candidate window sits under the text field's caret.
-    const Rect caret = sink_->viewImeCaret();
+    const hui::Rect caret = sink_->viewImeCaret();
     const NSRect local = NSMakeRect(caret.x, caret.y, std::max(1.0f, caret.w), std::max(1.0f, caret.h));
     const NSRect inWindow = [self convertRect:local toView:nil];
     return [self.window convertRectToScreen:inWindow];

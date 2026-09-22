@@ -43,8 +43,8 @@ Size measureTextShared(std::wstring_view text, const TextStyle& style, float max
     // Sizes below one dip make no sense and would only produce degenerate rects.
     const float size = std::max(1.0f, style.size);
 
-    // The real thing when the window has registered its DirectWrite cache.
-    if (g_shared != nullptr && g_shared->factory() != nullptr) {
+    // The real thing when the window has registered its (initialised) cache.
+    if (g_shared != nullptr && g_shared->ready()) {
         return g_shared->measure(text, style, maxWidth, maxLines);
     }
 
@@ -68,7 +68,7 @@ Size measureTextShared(std::wstring_view text, const TextStyle& style, float max
  * @brief Line metrics through the shared cache, or Segoe UI design values.
  */
 TextCache::LineMetrics lineMetricsShared(const TextStyle& style) {
-    if (g_shared != nullptr && g_shared->factory() != nullptr) {
+    if (g_shared != nullptr && g_shared->ready()) {
         return g_shared->lineMetrics(style);
     }
 

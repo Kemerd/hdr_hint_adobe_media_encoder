@@ -137,7 +137,7 @@ bool MacStatusItem::add(const std::wstring& tooltip) {
             NSImageSymbolConfiguration* config = [NSImageSymbolConfiguration configurationWithPointSize:15
                                                                                                  weight:NSFontWeightMedium];
             image = [image imageWithSymbolConfiguration:config] ?: image;
-            image.template = YES;
+            [image setTemplate:YES];
             item.button.image = image;
         } else {
             item.button.title = @"HDR";

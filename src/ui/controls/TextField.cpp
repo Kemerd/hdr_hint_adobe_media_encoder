@@ -87,7 +87,7 @@ bool isSpaceChar(wchar_t ch) {
  */
 TextCache* usableCache() {
     TextCache* cache = sharedTextCache();
-    return (cache && cache->factory()) ? cache : nullptr;
+    return (cache && cache->ready()) ? cache : nullptr;
 }
 
 /**
