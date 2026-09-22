@@ -196,7 +196,25 @@ PipeSecurity::~PipeSecurity() {
 /**
  * @brief Constructs an idle instance; nothing is created until create().
  */
+/**
+ * @brief "\\.\pipe\<shortName>" (an already-qualified name passes through).
+ */
+std::wstring ipcEndpointName(std::wstring_view shortName) {
+    constexpr std::wstring_view kPrefix = L"\\\\.\\pipe\\";
+    if (shortName.size() >= kPrefix.size() && iequals(shortName.substr(0, kPrefix.size()), kPrefix)) {
+        return std::wstring(shortName);
+    }
+    return std::wstring(kPrefix) + std::wstring(shortName);
+}
+
 PipeInstance::PipeInstance() = default;
+
+/**
+ * @brief The overlapped I/O event the server thread waits on.
+ */
+WaitHandle PipeInstance::event() const noexcept {
+    return event_.get();
+}
 
 /**
  * @brief Cancels any outstanding I/O and closes the pipe.

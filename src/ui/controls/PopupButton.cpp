@@ -211,7 +211,7 @@ void PopupButton::paintSelf(Canvas& c) {
     // Background: fillSecondary with fillTertiary layered in on hover/open.
     const bool pressing = pressed() && pressInside();
     if (pressing) {
-        c.pushTransform(D2D1::Matrix3x2F::Scale(kPressScale, kPressScale, b.center().toD2D()));
+        c.pushTransform(Transform2D::scale(kPressScale, kPressScale, b.center()));
     }
     const float hairline = c.scale().hairline();
     c.fillRoundedRect(b, kRadius, t.fillSecondary);

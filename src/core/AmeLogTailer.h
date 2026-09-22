@@ -8,7 +8,7 @@
 #include "core/EngineEvents.h"
 #include "platform/DirectoryWatch.h"
 #include "platform/FileIo.h"
-#include "platform/Handle.h"
+#include "platform/Event.h"
 #include "platform/Win.h"
 
 #include <atomic>
@@ -74,8 +74,8 @@ private:
     TailerConfig config_;
     std::thread thread_;
     std::atomic<bool> running_{false};
-    platform::UniqueHandle stopEvent_;
-    platform::UniqueHandle wakeEvent_;
+    platform::Event stopEvent_;
+    platform::Event wakeEvent_;
     std::atomic<bool> rescanRequested_{false};
 
     std::vector<LogCandidate> candidates_;

@@ -12,10 +12,15 @@
 #include "test_framework.h"
 
 #include "core/Logger.h"
+#include "core/PathUtil.h"
 #include "platform/FileIo.h"
 #include "platform/KnownFolders.h"
 #include "platform/Utf.h"
 #include "platform/Win.h"
+
+#if !defined(_WIN32)
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <cstdio>
@@ -64,7 +69,7 @@ void removeTree(const std::wstring& dir, int depth) {
     if (listing.ok()) {
         for (const platform::DirEntry& entry : listing.value()) {
             if (entry.name.empty()) { continue; }
-            const std::wstring full = dir + L"\\" + entry.name;
+            const std::wstring full = path::join(dir, entry.name);
             if (entry.isDirectory) {
                 removeTree(full, depth + 1);
             } else {
@@ -74,11 +79,24 @@ void removeTree(const std::wstring& dir, int depth) {
     }
 
     // Finally the folder itself. Failure is not fatal: it is a temp folder.
+#if defined(_WIN32)
     const std::wstring extended = platform::toExtendedPath(dir);
     if (!::RemoveDirectoryW(extended.c_str())) {
         // Fall back to the plain path in case the prefix confused a shim.
         ::RemoveDirectoryW(dir.c_str());
     }
+#else
+    ::rmdir(platform::toUtf8(dir).c_str());
+#endif
+}
+
+/// This process's id, for unique scratch-folder names.
+unsigned long currentProcessId() {
+#if defined(_WIN32)
+    return static_cast<unsigned long>(::GetCurrentProcessId());
+#else
+    return static_cast<unsigned long>(::getpid());
+#endif
 }
 
 /// Monotonic counter so two ScratchDirs created in the same tick differ.
@@ -130,16 +148,18 @@ std::wstring testRootFolder() {
 
     // Prefer the platform helper; fall back to GetTempPathW when it is empty.
     std::wstring temp = platform::tempFolder();
+#if defined(_WIN32)
     if (temp.empty()) {
         wchar_t buffer[MAX_PATH + 1] = {};
         const DWORD n = ::GetTempPathW(MAX_PATH, buffer);
         if (n > 0 && n <= MAX_PATH) { temp.assign(buffer, n); }
     }
+#endif
     // Strip a trailing separator so the join below never doubles it.
     while (!temp.empty() && (temp.back() == L'\\' || temp.back() == L'/')) { temp.pop_back(); }
     if (temp.empty()) { temp = L"."; }
 
-    root = temp + L"\\hdrhint_tests";
+    root = path::join(temp, L"hdrhint_tests");
     (void)platform::createDirectories(root);
     return root;
 }
@@ -151,8 +171,8 @@ ScratchDir::ScratchDir(std::wstring_view tag) {
         if (c == L'\\' || c == L'/' || c == L':' || c == L' ') { c = L'_'; }
     }
     if (safeTag.empty()) { safeTag = L"scratch"; }
-    path_ = testRootFolder() + L"\\" + safeTag + L"_" + std::to_wstring(::GetCurrentProcessId()) + L"_" +
-            std::to_wstring(nextScratchSerial());
+    path_ = path::join(testRootFolder(), safeTag + L"_" + std::to_wstring(currentProcessId()) + L"_" +
+                                              std::to_wstring(nextScratchSerial()));
 
     // Start from a clean folder even if a crashed run left one behind.
     removeTree(path_, 0);
@@ -167,7 +187,7 @@ ScratchDir::~ScratchDir() {
 }
 
 std::wstring ScratchDir::file(std::wstring_view name) const {
-    return path_ + L"\\" + std::wstring(name);
+    return path::join(path_, name);
 }
 
 bool ScratchDir::writeFile(std::wstring_view name, std::string_view bytes) const {
@@ -204,7 +224,9 @@ int main(int argc, char** argv) {
     using namespace hh::test;
 
     // UTF-8 console output so wide strings in failure dumps are readable.
+#if defined(_WIN32)
     ::SetConsoleOutputCP(CP_UTF8);
+#endif
 
     // Command line: "--list" or a single substring filter.
     bool listOnly = false;

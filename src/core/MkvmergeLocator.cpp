@@ -16,9 +16,11 @@
 #include "platform/Process.h"
 #include "platform/Utf.h"
 
+#include <algorithm>
 #include <format>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace hh {
@@ -50,6 +52,11 @@ std::wstring searchPathFor(const wchar_t* name, const wchar_t* ext) {
     if (name == nullptr || *name == L'\0') {
         return {};
     }
+#if !defined(_WIN32)
+    // POSIX executables carry no extension; PATH plus the Homebrew prefixes.
+    static_cast<void>(ext);
+    return platform::searchPath(name);
+#else
 
     // Start with a MAX_PATH buffer and grow once if the API asks for more.
     std::vector<wchar_t> buffer(MAX_PATH, L'\0');
@@ -67,7 +74,53 @@ std::wstring searchPathFor(const wchar_t* name, const wchar_t* ext) {
         buffer.assign(static_cast<size_t>(needed) + 1u, L'\0');
     }
     return {};
+#endif
 }
+
+#if !defined(_WIN32)
+/**
+ * @brief mkvmerge inside every MKVToolNix-<version>.app in one folder,
+ *        newest version first.
+ *
+ * The macOS build of MKVToolNix is a versioned app bundle
+ * ("MKVToolNix-90.0.app") with the command-line tools in Contents/MacOS.
+ */
+std::vector<std::wstring> appBundleCandidates(const std::wstring& folder) {
+    std::vector<std::wstring> bundles;
+    if (folder.empty()) {
+        return bundles;
+    }
+    const auto listing = platform::listDirectory(folder);
+    if (!listing) {
+        return bundles;
+    }
+    for (const platform::DirEntry& e : listing.value()) {
+        if (e.isDirectory && platform::istartsWith(e.name, L"MKVToolNix") && platform::iendsWith(e.name, L".app")) {
+            bundles.push_back(e.name);
+        }
+    }
+    // "MKVToolNix-90.0.app" > "MKVToolNix-89.0.app": compare the numbers, not the text.
+    std::sort(bundles.begin(), bundles.end(), [](const std::wstring& a, const std::wstring& b) {
+        const auto version = [](const std::wstring& n) {
+            const size_t dash = n.find(L'-');
+            if (dash == std::wstring::npos) {
+                return std::pair<long long, long long>{0, 0};
+            }
+            const std::vector<std::wstring> parts = platform::split(n.substr(dash + 1), L'.');
+            const long long major = parts.size() > 0 ? platform::parseInt(parts[0]).value_or(0) : 0;
+            const long long minor = parts.size() > 1 ? platform::parseInt(parts[1]).value_or(0) : 0;
+            return std::pair<long long, long long>{major, minor};
+        };
+        return version(a) > version(b);
+    });
+    std::vector<std::wstring> out;
+    out.reserve(bundles.size());
+    for (const std::wstring& b : bundles) {
+        out.push_back(path::join(path::join(path::join(folder, b), L"Contents/MacOS"), L"mkvmerge"));
+    }
+    return out;
+}
+#endif
 
 /**
  * @brief Extracts the line that carries "mkvmerge v" from captured output.
@@ -249,12 +302,38 @@ MkvmergeInfo locateMkvmerge(const std::wstring& configuredPath, int minMajorVers
     // 1. The explicitly configured path (may point at a folder or the exe).
     if (!platform::trim(configuredPath).empty()) {
         std::wstring configured(platform::trim(configuredPath));
+#if defined(_WIN32)
         if (platform::isDirectory(configured)) {
             configured = path::join(configured, L"mkvmerge.exe");
         }
+#else
+        // A picked MKVToolNix.app keeps its tools in Contents/MacOS.
+        if (platform::isDirectory(configured) && platform::iendsWith(configured, L".app")) {
+            configured = path::join(path::join(configured, L"Contents/MacOS"), L"mkvmerge");
+        } else if (platform::isDirectory(configured)) {
+            configured = path::join(configured, L"mkvmerge");
+        }
+#endif
         addCandidate(configured);
     }
 
+#if !defined(_WIN32)
+    // 2./3. MKVToolNix app bundles (system-wide, then per-user), then PATH /
+    // Homebrew / MacPorts, then a copy shipped next to us.
+    for (const std::wstring& c : appBundleCandidates(platform::programFilesX64Folder())) {
+        addCandidate(c);
+    }
+    for (const std::wstring& c : appBundleCandidates(platform::programFilesX86Folder())) {
+        addCandidate(c);
+    }
+    addCandidate(searchPathFor(L"mkvmerge", nullptr));
+    {
+        const std::wstring exeDir = platform::exeDirectory();
+        if (!exeDir.empty()) {
+            addCandidate(path::join(path::join(exeDir, L"mkvtoolnix"), L"mkvmerge"));
+        }
+    }
+#else
     // 2./3. The standard MKVToolNix install locations.
     const std::wstring pf64 = platform::programFilesX64Folder();
     if (!pf64.empty()) {
@@ -273,6 +352,7 @@ MkvmergeInfo locateMkvmerge(const std::wstring& configuredPath, int minMajorVers
     if (!exeDir.empty()) {
         addCandidate(path::join(path::join(exeDir, L"mkvtoolnix"), L"mkvmerge.exe"));
     }
+#endif
 
     // Probe each candidate in order; the first acceptable one wins.
     MkvmergeInfo fallback;     // first candidate that ran but is too old

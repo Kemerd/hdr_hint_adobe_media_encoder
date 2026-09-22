@@ -33,7 +33,14 @@ using json = nlohmann::json;
 constexpr const wchar_t* kLog = L"MediaProbe";
 
 /// The conventional static-build install location on Windows.
+#if defined(_WIN32)
 constexpr const wchar_t* kDefaultFfmpegBin = L"C:\\ffmpeg\\bin\\ffprobe.exe";
+/// The executable's file name on this platform.
+constexpr const wchar_t* kFfprobeName = L"ffprobe.exe";
+#else
+constexpr const wchar_t* kDefaultFfmpegBin = L"/opt/homebrew/bin/ffprobe";
+constexpr const wchar_t* kFfprobeName = L"ffprobe";
+#endif
 
 /**
  * @brief Resolves a bare executable name through the Win32 search path.
@@ -45,6 +52,11 @@ std::wstring searchPathFor(const wchar_t* name, const wchar_t* ext) {
     if (name == nullptr || *name == L'\0') {
         return {};
     }
+#if !defined(_WIN32)
+    // POSIX executables carry no extension; PATH plus the Homebrew prefixes.
+    static_cast<void>(ext);
+    return platform::searchPath(name);
+#else
     std::vector<wchar_t> buffer(MAX_PATH, L'\0');
     for (int attempt = 0; attempt < 2; ++attempt) {
         const DWORD needed = ::SearchPathW(nullptr, name, ext, static_cast<DWORD>(buffer.size()), buffer.data(), nullptr);
@@ -57,6 +69,7 @@ std::wstring searchPathFor(const wchar_t* name, const wchar_t* ext) {
         buffer.assign(static_cast<size_t>(needed) + 1u, L'\0');
     }
     return {};
+#endif
 }
 
 // ---- JSON access helpers ----------------------------------------------------
@@ -212,7 +225,7 @@ std::wstring locateFfprobe(const std::wstring& configuredPath) {
     if (!configured.empty()) {
         std::wstring candidate(configured);
         if (platform::isDirectory(candidate)) {
-            candidate = path::join(candidate, L"ffprobe.exe");
+            candidate = path::join(candidate, kFfprobeName);
         }
         if (platform::isFile(candidate)) {
             HH_LOG_DEBUG(kLog, L"using configured ffprobe '{}'", candidate);
@@ -237,7 +250,7 @@ std::wstring locateFfprobe(const std::wstring& configuredPath) {
     // 4. Next to our own executable.
     const std::wstring exeDir = platform::exeDirectory();
     if (!exeDir.empty()) {
-        const std::wstring beside = path::join(exeDir, L"ffprobe.exe");
+        const std::wstring beside = path::join(exeDir, kFfprobeName);
         if (platform::isFile(beside)) {
             HH_LOG_DEBUG(kLog, L"found ffprobe beside the executable: '{}'", beside);
             return beside;

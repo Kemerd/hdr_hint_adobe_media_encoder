@@ -4,12 +4,14 @@
  * Runs inside AME's CEPHtmlEngine (CEF 99 / Node 17, mixed context). It has
  * four jobs:
  *
- *   1. Pipe client   - NDJSON over \\.\pipe\HdrHint to the native app, with
- *                      reconnect backoff, a small outbound ring buffer and a
- *                      5-second ping.
- *   2. Launcher      - when the pipe does not exist, find HdrHint.exe and
- *                      start it (Node spawn, ExtendScript File.execute as the
- *                      fallback when CEF's job object kills the child).
+ *   1. Pipe client   - NDJSON over \\.\pipe\HdrHint (Windows) or the Unix
+ *                      socket ~/Library/Application Support/HdrHint/HdrHint.sock
+ *                      (macOS) to the native app, with reconnect backoff, a
+ *                      small outbound ring buffer and a 5-second ping.
+ *   2. Launcher      - when the pipe does not exist, find HdrHint.exe /
+ *                      HdrHint.app and start it (Node spawn or /usr/bin/open,
+ *                      ExtendScript File.execute as the fallback when CEF's
+ *                      job object kills the child).
  *   3. Event bridge  - forwards ExtendScript CSXS events (host.jsx) and CEP
  *                      lifecycle events to the app as {kind:"ame"} messages.
  *   4. Bounds        - reports the panel's screen rectangle so the app can
@@ -23,6 +25,11 @@
 
     // ---- constants ------------------------------------------------------------
     const PANEL_VERSION = '1.0.0';
+    // macOS: CEF reports "MacIntel" (Apple silicon included).
+    const IS_MAC = (typeof navigator !== 'undefined') && /^Mac/i.test(String(navigator.platform || ''));
+    const SEP = IS_MAC ? '/' : '\\';
+    const EXE_NAME = IS_MAC ? 'HdrHint.app' : 'HdrHint.exe';
+    const PIPE_NAME = 'HdrHint';
     const DEFAULT_PIPE = '\\\\.\\pipe\\HdrHint';
     const PIPE_PREFIX = '\\\\.\\pipe\\';
     const EVENT_TYPE = 'com.everett.hdrhint.ame';
@@ -137,6 +144,14 @@
         return String(p || '').replace(/\//g, '\\').replace(/[\\]+$/, '');
     }
 
+    // This platform's path form: backslashes on Windows, forward slashes on
+    // macOS (never a trailing separator, except for the root itself).
+    function toNativePath(p) {
+        if (!IS_MAC) { return toBackslashes(p); }
+        const s = String(p || '').replace(/\\/g, '/');
+        return s.length > 1 ? s.replace(/\/+$/, '') : s;
+    }
+
     // ExtendScript prefers forward slashes inside string literals; also escape
     // quotes and backslashes so the path survives being embedded in a script.
     function toJsxLiteral(p) {
@@ -197,7 +212,22 @@
 
     function joinPath(a, b) {
         try { if (nodePath) { return nodePath.join(a, b); } } catch (_) { /* fall through */ }
-        return toBackslashes(a) + '\\' + String(b || '');
+        return toNativePath(a) + SEP + String(b || '');
+    }
+
+    // The per-user folder the app keeps launcher.json (and, on macOS, its
+    // socket) in: %APPDATA% on Windows, ~/Library/Application Support on macOS.
+    function appDataRoot() {
+        if (!IS_MAC) { return envVar('APPDATA'); }
+        const home = envVar('HOME');
+        return home ? joinPath(joinPath(home, 'Library'), 'Application Support') : '';
+    }
+
+    // The app's IPC endpoint for a short name ("HdrHint").
+    function pipePathFor(name) {
+        if (!IS_MAC) { return PIPE_PREFIX + name; }
+        const root = appDataRoot();
+        return root ? joinPath(joinPath(root, 'HdrHint'), name + '.sock') : '';
     }
 
     // ---- panel state ----------------------------------------------------------
@@ -207,10 +237,10 @@
         docked: true,
         appVersion: '',
         detail: '',
-        extPath: '',              // backslashes, for Node and the exe
+        extPath: '',              // native separators, for Node and the exe
         extPathFwd: '',           // forward slashes, for ExtendScript literals
         extensionId: '',
-        pipeName: DEFAULT_PIPE,
+        pipeName: IS_MAC ? pipePathFor(PIPE_NAME) : DEFAULT_PIPE,
         autoLaunch: true,
         exeOverride: '',          // path chosen via Locate... in this session
         skin: { panelBg: '#232323', isDark: true, appName: '', appVersion: '' },
@@ -314,7 +344,7 @@
         try {
             if (cs && typeof SystemPath !== 'undefined' && SystemPath && SystemPath.EXTENSION) {
                 const p = cs.getSystemPath(SystemPath.EXTENSION);
-                if (p && typeof p === 'string') { return toBackslashes(p); }
+                if (p && typeof p === 'string') { return toNativePath(p); }
             }
         } catch (e) {
             log('getSystemPath: ' + e);
@@ -323,8 +353,8 @@
         try {
             let p = decodeURIComponent(window.location.pathname || '');
             p = p.replace(/^\/+([A-Za-z]:)/, '$1');
-            p = toBackslashes(p);
-            const cut = p.lastIndexOf('\\');
+            p = toNativePath(p);
+            const cut = p.lastIndexOf(SEP);
             if (cut > 0) { p = p.slice(0, cut); }
             return p;
         } catch (e) {
@@ -386,7 +416,9 @@
         if (typeof cfg.autoLaunch === 'boolean') { state.autoLaunch = cfg.autoLaunch; }
         if (typeof cfg.pipeName === 'string' && cfg.pipeName.trim()) {
             const name = cfg.pipeName.trim();
-            state.pipeName = (name.indexOf('\\pipe\\') >= 0) ? name : PIPE_PREFIX + name;
+            // A full endpoint (\\.\pipe\X or an absolute socket path) is used as is.
+            const full = IS_MAC ? name.charAt(0) === '/' : name.indexOf('\\pipe\\') >= 0;
+            state.pipeName = full ? name : pipePathFor(name);
         }
         log('config.json: exePath=' + (cfg.exePath || '(none)') + ' autoLaunch=' + state.autoLaunch + ' pipe=' + state.pipeName);
     }
@@ -631,7 +663,7 @@
     // tool so hiding its window is correct here (unlike the exe spawn below).
     function queryRegistryExePath() {
         return new Promise((resolve) => {
-            if (!cp) { resolve(''); return; }
+            if (!cp || IS_MAC) { resolve(''); return; }
             try {
                 cp.execFile('reg', ['query', 'HKCU\\Software\\HdrHint', '/v', 'ExePath'],
                     { windowsHide: true, timeout: 4000 }, (err, stdout) => {
@@ -651,26 +683,33 @@
     }
 
     // Candidate order is fixed: the installer's config.json, the app's own
-    // launcher.json, the registry, then the default per-user install folder.
+    // launcher.json, the registry (Windows), then the default install folders.
     // A path chosen with Locate... (this session) is tried before all of them.
     async function resolveExePath() {
         const candidates = [];
         if (state.exeOverride) { candidates.push({ exe: state.exeOverride, source: 'Locate' }); }
 
         const cfg = state.extPath ? readJsonFile(joinPath(state.extPath, 'config.json')) : null;
-        if (cfg && typeof cfg.exePath === 'string' && cfg.exePath.trim()) { candidates.push({ exe: toBackslashes(cfg.exePath.trim()), source: 'config.json' }); }
+        if (cfg && typeof cfg.exePath === 'string' && cfg.exePath.trim()) { candidates.push({ exe: toNativePath(cfg.exePath.trim()), source: 'config.json' }); }
 
-        const appData = envVar('APPDATA');
+        const appData = appDataRoot();
         if (appData) {
             const lj = readJsonFile(joinPath(joinPath(appData, 'HdrHint'), 'launcher.json'));
-            if (lj && typeof lj.exePath === 'string' && lj.exePath.trim()) { candidates.push({ exe: toBackslashes(lj.exePath.trim()), source: 'launcher.json' }); }
+            if (lj && typeof lj.exePath === 'string' && lj.exePath.trim()) { candidates.push({ exe: toNativePath(lj.exePath.trim()), source: 'launcher.json' }); }
         }
 
         const reg = await queryRegistryExePath();
         if (reg) { candidates.push({ exe: toBackslashes(reg), source: 'registry' }); }
 
-        const localAppData = envVar('LOCALAPPDATA');
-        if (localAppData) { candidates.push({ exe: joinPath(joinPath(joinPath(localAppData, 'Programs'), 'HdrHint'), 'HdrHint.exe'), source: 'LOCALAPPDATA' }); }
+        if (IS_MAC) {
+            // Drag-to-Applications installs, system-wide or per user.
+            candidates.push({ exe: '/Applications/' + EXE_NAME, source: '/Applications' });
+            const home = envVar('HOME');
+            if (home) { candidates.push({ exe: joinPath(joinPath(home, 'Applications'), EXE_NAME), source: '~/Applications' }); }
+        } else {
+            const localAppData = envVar('LOCALAPPDATA');
+            if (localAppData) { candidates.push({ exe: joinPath(joinPath(joinPath(localAppData, 'Programs'), 'HdrHint'), 'HdrHint.exe'), source: 'LOCALAPPDATA' }); }
+        }
 
         for (const c of candidates) {
             if (fileExists(c.exe)) { return c; }
@@ -686,8 +725,8 @@
             const found = await resolveExePath();
             if (!found) {
                 launcher.notInstalledUntil = Date.now() + NOT_INSTALLED_RETRY_MS;
-                setStatus('notinstalled', 'HdrHint.exe not found; use Locate\u2026');
-                log('launch (' + reason + '): no HdrHint.exe found');
+                setStatus('notinstalled', EXE_NAME + ' not found; use Locate\u2026');
+                log('launch (' + reason + '): no ' + EXE_NAME + ' found');
                 return;
             }
             launcher.lastAttemptAt = Date.now();
@@ -707,9 +746,14 @@
     function spawnDetached(exe) {
         if (!cp) { log('spawn: child_process unavailable'); return false; }
         const args = ['--from-panel', '--ext-path', state.extPath];
+        // macOS: an .app bundle is started through Launch Services, which
+        // also keeps it out of CEF's process tree. open(1) returns at once.
+        const viaOpen = IS_MAC && /\.app\/?$/i.test(String(exe));
+        const program = viaOpen ? '/usr/bin/open' : exe;
+        const argv = viaOpen ? ['-a', exe, '--args'].concat(args) : args;
         let child = null;
         try {
-            child = cp.spawn(exe, args, { detached: true, stdio: 'ignore' });
+            child = cp.spawn(program, argv, { detached: true, stdio: 'ignore' });
         } catch (e) {
             log('spawn threw: ' + e);
             return false;
@@ -729,6 +773,13 @@
             if (settled) { return; }
             settled = true;
             const ms = Date.now() - startedAt;
+            if (viaOpen) {
+                // open(1) exits as soon as Launch Services took the request.
+                if (code === 0) { log('open handed the launch to Launch Services (' + ms + ' ms)'); return; }
+                log('open failed (code ' + code + '); using ExtendScript launcher');
+                launchViaJsx(exe);
+                return;
+            }
             if (ms < CHILD_GRACE_MS) {
                 if (code === 0 && pipe.state === 'linked') {
                     log('child exited cleanly after ' + ms + ' ms (second instance forwarded)');
@@ -781,11 +832,11 @@
             const cepFs = window.cep && window.cep.fs;
             if (!cepFs || typeof cepFs.showOpenDialog !== 'function') { log('Locate: cep.fs.showOpenDialog unavailable'); return; }
             const localAppData = envVar('LOCALAPPDATA');
-            const initial = localAppData ? joinPath(joinPath(localAppData, 'Programs'), 'HdrHint') : '';
-            const r = cepFs.showOpenDialog(false, false, 'Locate HdrHint.exe', initial, ['exe']);
+            const initial = IS_MAC ? '/Applications' : (localAppData ? joinPath(joinPath(localAppData, 'Programs'), 'HdrHint') : '');
+            const r = cepFs.showOpenDialog(false, false, 'Locate ' + EXE_NAME, initial, [IS_MAC ? 'app' : 'exe']);
             const chosen = (r && r.err === 0 && Array.isArray(r.data) && r.data.length) ? r.data[0] : '';
             if (!chosen) { log('Locate: cancelled'); return; }
-            const p = toBackslashes(chosen);
+            const p = toNativePath(chosen);
             if (!fileExists(p)) { log('Locate: file does not exist: ' + p); return; }
             state.exeOverride = p;
             launcher.notInstalledUntil = 0;
@@ -798,7 +849,7 @@
 
     function persistLauncherJson(exe) {
         if (!fs) { return; }
-        const appData = envVar('APPDATA');
+        const appData = appDataRoot();
         if (!appData) { return; }
         try {
             const dir = joinPath(appData, 'HdrHint');
@@ -1083,6 +1134,9 @@
         loadConfig();
         subscribeCsxs();
         loadJsx();
+        // Docking needs Win32 window ownership: macOS keeps the app floating.
+        if (IS_MAC && ui.btnDock) { ui.btnDock.hidden = true; }
+        if (IS_MAC && ui.btnLocate) { ui.btnLocate.title = 'Pick ' + EXE_NAME + ' manually'; }
         wireButtons();
         wireBounds();
         wireUnload();

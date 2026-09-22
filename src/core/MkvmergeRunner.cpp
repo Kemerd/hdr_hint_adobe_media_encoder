@@ -439,11 +439,11 @@ void consumeLines(RunState& state, bool flush) {
 /**
  * @brief True when the manual-reset cancel event is signalled right now.
  */
-bool cancelRequested(HANDLE cancelEvent) {
-    if (cancelEvent == nullptr) {
+bool cancelRequested(platform::WaitHandle cancelEvent) {
+    if (cancelEvent == platform::kInvalidWaitHandle) {
         return false;
     }
-    return ::WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0;
+    return platform::isSignalled(cancelEvent);
 }
 
 /**
@@ -730,7 +730,7 @@ bool MkvmergeRunner::parseProgressLine(std::string_view rawLine, float& progress
 // run
 // ---------------------------------------------------------------------------
 
-MuxRunResult MkvmergeRunner::run(const MuxPlan& plan, HANDLE cancelEvent,
+MuxRunResult MkvmergeRunner::run(const MuxPlan& plan, platform::WaitHandle cancelEvent,
                                  const std::function<void(float)>& onProgress, MuxRecord& record) {
     MuxRunResult result;
     result.status = MuxRunResult::Status::Failed;
@@ -864,7 +864,7 @@ MuxRunResult MkvmergeRunner::run(const MuxPlan& plan, HANDLE cancelEvent,
     // can never spin forever) and flush the trailing fragment.
     for (int i = 0; i < 4096; ++i) {
         std::string chunk;
-        const auto status = child.readChunk(chunk, 0, nullptr);
+        const auto status = child.readChunk(chunk, 0, platform::kInvalidWaitHandle);
         if (!chunk.empty()) {
             state.pending += chunk;
             consumeLines(state, false);
@@ -876,7 +876,7 @@ MuxRunResult MkvmergeRunner::run(const MuxPlan& plan, HANDLE cancelEvent,
     consumeLines(state, true);
 
     record.durationMs = platform::nowMonotonicMs() - startedMs;
-    record.exitCode = child.exited() ? child.exitCode() : STILL_ACTIVE;
+    record.exitCode = child.exited() ? child.exitCode() : platform::kStillActiveExitCode;
 
     // Map the outcome.
     if (cancelled) {

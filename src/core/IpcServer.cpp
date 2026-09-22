@@ -1,7 +1,7 @@
 // ---------------------------------------------------------------------------
 // IpcServer.cpp - named-pipe server thread (\\.\pipe\HdrHint).
 //
-// One thread multiplexes every pipe instance with WaitForMultipleObjects:
+// One thread multiplexes every pipe instance with platform::waitAny():
 //
 //   [0] stop event      -> leave the loop
 //   [1] wake event      -> the engine queued outbound lines; hand them out
@@ -20,6 +20,7 @@
 #include "platform/Utf.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -37,8 +38,10 @@ namespace {
 /// Component tag for the log.
 constexpr const wchar_t* kLog = L"IpcServer";
 
+#if defined(_WIN32)
 /// Namespace prefix every local pipe name lives under.
 constexpr wchar_t kPipePrefix[] = L"\\\\.\\pipe\\";
+#endif
 
 /// A client that sends more than this without a newline is misbehaving.
 constexpr size_t kMaxInboundBytes = 1024u * 1024u;
@@ -52,13 +55,13 @@ constexpr size_t kMaxPendingSends = 16384;
 /// The wait slice: short enough that liveness checks run even when idle.
 constexpr DWORD kWaitSliceMs = 1000;
 
-/// stop + wake take two of the MAXIMUM_WAIT_OBJECTS slots.
-constexpr int kMaxInstancesHard = MAXIMUM_WAIT_OBJECTS - 2;
+/// stop + wake take two of the waitAny() slots.
+constexpr int kMaxInstancesHard = static_cast<int>(platform::kMaxWaitHandles) - 2;
 
 /// Liveness used when the caller passes a negative value.
 constexpr int kDefaultLivenessSeconds = 15;
 
-/// Consecutive WaitForMultipleObjects failures before the thread gives up.
+/// Consecutive waitAny() failures before the thread gives up.
 constexpr int kMaxWaitFailures = 5;
 
 using PipeState = platform::PipeInstance::State;
@@ -102,6 +105,7 @@ Result<void> IpcServer::start(const std::wstring& pipeName, int maxInstances, in
     if (shortName.empty()) {
         return Error::text(L"IpcServer::start: empty pipe name");
     }
+#if defined(_WIN32)
     if (platform::istartsWith(shortName, kPipePrefix)) {
         fullName_ = std::wstring(shortName);
     } else {
@@ -112,6 +116,13 @@ Result<void> IpcServer::start(const std::wstring& pipeName, int maxInstances, in
     if (leaf.empty() || leaf.find_first_of(L"\\/") != std::wstring_view::npos) {
         return Error::text(L"IpcServer::start: invalid pipe name '" + fullName_ + L"'");
     }
+#else
+    // POSIX: the endpoint is a Unix socket in the app's support folder.
+    fullName_ = platform::ipcEndpointName(shortName);
+    if (fullName_.empty()) {
+        return Error::text(L"IpcServer::start: invalid pipe name '" + std::wstring(shortName) + L"'");
+    }
+#endif
 
     // Clamp the knobs to something the wait loop can actually handle.
     maxInstances_ = std::clamp(maxInstances, 1, kMaxInstancesHard);
@@ -124,14 +135,14 @@ Result<void> IpcServer::start(const std::wstring& pipeName, int maxInstances, in
         }
         clients_.clear();
         security_.reset();
-        stopEvent_.reset();
-        wakeEvent_.reset();
+        stopEvent_.close();
+        wakeEvent_.close();
         connected_.store(0);
     };
 
     // Control events: stop is manual-reset (stays signalled), wake auto-reset.
-    stopEvent_ = platform::makeEvent(true);
-    wakeEvent_ = platform::makeEvent(false);
+    stopEvent_ = platform::makeWaitableEvent(true);
+    wakeEvent_ = platform::makeWaitableEvent(false);
     if (!stopEvent_ || !wakeEvent_) {
         const Error err = Error::fromLastError(L"IpcServer: CreateEvent");
         abortStart();
@@ -209,8 +220,8 @@ void IpcServer::stop() {
     const bool wasRunning = running_.load() || thread_.joinable();
 
     // Ask the loop to leave.
-    if (stopEvent_ && !::SetEvent(stopEvent_.get())) {
-        HH_LOG_WARN(kLog, L"SetEvent(stop) failed: {}", Error::fromLastError(L"SetEvent").toString());
+    if (stopEvent_) {
+        stopEvent_.set();
     }
 
     // Wait for it. Joining from the server thread itself would deadlock, so
@@ -242,8 +253,8 @@ void IpcServer::stop() {
         std::lock_guard<std::mutex> lock(mutex_);
         pendingSends_.clear();
     }
-    stopEvent_.reset();
-    wakeEvent_.reset();
+    stopEvent_.close();
+    wakeEvent_.close();
     security_.reset();
 
     if (wasRunning) {
@@ -276,8 +287,8 @@ void IpcServer::send(uint32_t connectionId, std::string line) {
     }
 
     // Poke the loop.
-    if (wakeEvent_ && !::SetEvent(wakeEvent_.get())) {
-        HH_LOG_WARN(kLog, L"SetEvent(wake) failed: {}", Error::fromLastError(L"SetEvent").toString());
+    if (wakeEvent_) {
+        wakeEvent_.set();
     }
 }
 
@@ -422,7 +433,7 @@ void IpcServer::threadMain() {
 
     // ---- the loop ----------------------------------------------------------
 
-    std::vector<HANDLE> handles;
+    std::vector<platform::WaitHandle> handles;
     std::vector<Client*> waitClients;
     handles.reserve(2 + clients_.size());
     waitClients.reserve(clients_.size());
@@ -432,47 +443,43 @@ void IpcServer::threadMain() {
         // Rebuild the wait set every pass; it is tiny and instances can close.
         handles.clear();
         waitClients.clear();
-        handles.push_back(stopEvent_.get());
-        handles.push_back(wakeEvent_.get());
+        handles.push_back(stopEvent_.handle());
+        handles.push_back(wakeEvent_.handle());
         for (auto& c : clients_) {
-            if (c && c->pipe && c->pipe->event()) {
+            if (c && c->pipe && c->pipe->event() != platform::kInvalidWaitHandle) {
                 handles.push_back(c->pipe->event());
                 waitClients.push_back(c.get());
             }
         }
 
         const DWORD count = static_cast<DWORD>(handles.size());
-        const DWORD r = ::WaitForMultipleObjects(count, handles.data(), FALSE, kWaitSliceMs);
+        const DWORD r = platform::waitAny(handles.data(), handles.size(), kWaitSliceMs);
 
         // A failing wait usually means a handle went bad; do not spin forever.
-        if (r == WAIT_FAILED) {
+        if (r == platform::kWaitFailed) {
             ++waitFailures;
-            HH_LOG_ERROR(kLog, L"WaitForMultipleObjects failed: {}",
-                         Error::fromLastError(L"WaitForMultipleObjects").toString());
+            HH_LOG_ERROR(kLog, L"wait failed: {}", Error::fromLastError(L"waitAny").toString());
             if (waitFailures >= kMaxWaitFailures) {
                 HH_LOG_ERROR(kLog, L"giving up after {} consecutive wait failures", waitFailures);
                 break;
             }
-            ::Sleep(100);
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             continue;
         }
         waitFailures = 0;
 
         // Dispatch on what fired.
-        if (r == WAIT_OBJECT_0) {
+        if (r == 0) {
             break;                                   // stop requested
-        } else if (r == WAIT_OBJECT_0 + 1) {
+        } else if (r == 1) {
             drainSends();                            // engine queued lines
-        } else if (r >= WAIT_OBJECT_0 + 2 && r < WAIT_OBJECT_0 + count) {
-            const size_t index = static_cast<size_t>(r - WAIT_OBJECT_0 - 2);
+        } else if (r >= 2 && r < count) {
+            const size_t index = static_cast<size_t>(r - 2);
             if (index < waitClients.size() && waitClients[index]) {
                 onClientSignalled(*waitClients[index]);
             }
-        } else if (r >= WAIT_ABANDONED_0 && r < WAIT_ABANDONED_0 + count) {
-            // Only mutexes can be abandoned; events cannot. Log and carry on.
-            HH_LOG_WARN(kLog, L"unexpected abandoned wait (index {})", r - WAIT_ABANDONED_0);
         }
-        // WAIT_TIMEOUT: nothing happened; the liveness sweep below still runs.
+        // kWaitTimeout: nothing happened; the liveness sweep below still runs.
 
         checkLiveness();
     }

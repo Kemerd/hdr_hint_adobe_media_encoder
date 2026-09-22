@@ -296,10 +296,22 @@ void SettingsScreen::buildDefaults()
     if (!group) return;
 
     // Per-transfer default LUT and preset.
-    lutPq_ = addPopupRow(group, L"Default LUT (PQ)",
-                         [this](const std::wstring& v) { vm_.setDefaultLut(TransferKind::PQ, v); });
-    lutHlg_ = addPopupRow(group, L"Default LUT (HLG)",
-                          [this](const std::wstring& v) { vm_.setDefaultLut(TransferKind::HLG, v); });
+    // The last item in both lists is "Choose a .cube file...", which opens a
+    // picker rather than naming a LUT; browseLut() writes the real path.
+    lutPq_ = addPopupRow(group, L"Default LUT (PQ)", [this](const std::wstring& v) {
+        if (v == kBrowseLutValue) {
+            vm_.browseLut(TransferKind::PQ);
+            return;
+        }
+        vm_.setDefaultLut(TransferKind::PQ, v);
+    });
+    lutHlg_ = addPopupRow(group, L"Default LUT (HLG)", [this](const std::wstring& v) {
+        if (v == kBrowseLutValue) {
+            vm_.browseLut(TransferKind::HLG);
+            return;
+        }
+        vm_.setDefaultLut(TransferKind::HLG, v);
+    });
     presetPq_ = addPopupRow(group, L"PQ preset",
                             [this](const std::wstring& v) { vm_.setDefaultPreset(TransferKind::PQ, v); });
     presetHlg_ = addPopupRow(group, L"HLG preset",
@@ -409,6 +421,7 @@ void SettingsScreen::buildBehaviour()
     autoProcessWatched_ = addToggleRow(group, L"From watch folders",
                                        L"Any new video that appears in a folder below",
                                        [this](bool on) { vm_.setAutoProcessWatched(on); });
+#if defined(_WIN32)
     recycle_ = addToggleRow(group, L"Move original to Recycle Bin after success", L"",
                             [this](bool on) { vm_.setRecycleOriginal(on); });
     dock_ = addToggleRow(group, L"Dock inside Media Encoder",
@@ -423,6 +436,22 @@ void SettingsScreen::buildBehaviour()
     showOnAmeLaunch_ = addToggleRow(group, L"Open when Media Encoder starts",
                                     L"Off: waits in the tray until you open the panel",
                                     [this](bool on) { vm_.setShowOnAmeLaunch(on); });
+#else
+    // macOS: the Trash, the menu bar and Login Items; docking is a Windows feature.
+    recycle_ = addToggleRow(group, L"Move original to the Trash after success", L"",
+                            [this](bool on) { vm_.setRecycleOriginal(on); });
+    alwaysOnTop_ = addToggleRow(group, L"Keep window on top", L"", [this](bool on) { vm_.setAlwaysOnTop(on); });
+    minimizeToTray_ = addToggleRow(group, L"Keep running in the menu bar",
+                                   L"Closing the window leaves HDR Hint watching from the menu bar",
+                                   [this](bool on) { vm_.setMinimizeToTray(on); });
+    startMinimized_ = addToggleRow(group, L"Start hidden in the menu bar", L"", [this](bool on) { vm_.setStartMinimized(on); });
+    startWithWindows_ = addToggleRow(group, L"Open at login",
+                                     L"Only needed if Media Encoder does not start HDR Hint itself",
+                                     [this](bool on) { vm_.setStartWithWindows(on); });
+    showOnAmeLaunch_ = addToggleRow(group, L"Open when Media Encoder starts",
+                                    L"Off: waits in the menu bar until you open it",
+                                    [this](bool on) { vm_.setShowOnAmeLaunch(on); });
+#endif
     quitWithAme_ = addToggleRow(group, L"Quit when Media Encoder quits",
                                 L"Waits for any running mux to finish first",
                                 [this](bool on) { vm_.setQuitWithAme(on); });

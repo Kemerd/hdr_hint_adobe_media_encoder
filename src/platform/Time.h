@@ -2,7 +2,8 @@
 // Time.h - clocks and time formatting.
 //
 // "Utc" values throughout the project are FILETIME-style uint64 (100 ns ticks
-// since 1601-01-01 UTC). Monotonic time is milliseconds from QPC.
+// since 1601-01-01 UTC) on every platform, so persisted stamps are portable.
+// Monotonic time is milliseconds from QPC (Windows) / CLOCK_MONOTONIC (POSIX).
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -21,9 +22,11 @@ uint64_t nowMonotonicMs();
 /// Monotonic seconds as double (for animation clocks).
 double nowMonotonicSeconds();
 
+#if defined(_WIN32)
 /// FILETIME <-> uint64 helpers.
 uint64_t fileTimeToUint64(const FILETIME& ft);
 FILETIME uint64ToFileTime(uint64_t v);
+#endif
 
 /// FILETIME uint64 -> Unix milliseconds (and back).
 int64_t utcToUnixMs(uint64_t utc);

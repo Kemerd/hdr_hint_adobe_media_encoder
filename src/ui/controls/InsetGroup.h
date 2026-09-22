@@ -35,6 +35,13 @@ public:
     void paintSelf(Canvas& c) override;
 
 private:
+    /**
+     * @brief Width the title column keeps before a side-by-side accessory
+     *        gets the rest: the title's own single-line width (a short label
+     *        is never cut), at least kMinTitleW, at most half the row.
+     */
+    float titleFloor(float innerW);
+
     Widget* title_ = nullptr;
     Widget* subtitle_ = nullptr;
     Widget* accessory_ = nullptr;

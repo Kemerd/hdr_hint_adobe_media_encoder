@@ -280,4 +280,39 @@ std::wstring appRoamingDataFolder()
     return appSubfolder(roamingAppDataFolder(), L"RoamingAppData");
 }
 
+/**
+ * @brief %LOCALAPPDATA%\HdrHint\logs, created on demand.
+ */
+std::wstring appLogsFolder()
+{
+    const std::wstring base = appLocalDataFolder();
+    if (base.empty()) {
+        return {};
+    }
+    std::wstring folder = base + L"\\logs";
+    if (!::CreateDirectoryW(folder.c_str(), nullptr)) {
+        const DWORD err = ::GetLastError();
+        if (err != ERROR_ALREADY_EXISTS) {
+            HH_LOG_WARN(kLog, L"CreateDirectory({}) failed: {}", folder, Error::fromWin32(err, L"").toString());
+        }
+    }
+    return folder;
+}
+
+/**
+ * @brief Windows ships its assets next to the exe.
+ */
+std::wstring resourceDirectory()
+{
+    return exeDirectory();
+}
+
+/**
+ * @brief Windows relaunches the exe itself.
+ */
+std::wstring launchablePath()
+{
+    return exePath();
+}
+
 } // namespace hh::platform

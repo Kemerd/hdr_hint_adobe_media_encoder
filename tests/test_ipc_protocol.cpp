@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace ipc = hh::ipc;
@@ -22,6 +23,26 @@ using hh::JobState;
 using hh::TransferKind;
 
 namespace {
+
+/**
+ * @brief A Windows-shaped sample path in this platform's own form:
+ *        unchanged on Windows, "C:\\x\\clip.mp4" -> "/x/clip.mp4" on POSIX,
+ *        so file-name logic (displayName) sees real separators everywhere.
+ */
+std::wstring samplePath(std::wstring_view windowsPath) {
+#if defined(_WIN32)
+    return std::wstring(windowsPath);
+#else
+    std::wstring out(windowsPath);
+    if (out.size() >= 2 && out[1] == L':') {
+        out.erase(0, 2);   // drop the drive letter
+    }
+    for (wchar_t& ch : out) {
+        if (ch == L'\\') { ch = L'/'; }
+    }
+    return out;
+#endif
+}
 
 /// Looks up a nested object member; nullptr when absent or not an object.
 const ipc::json* objectAt(const ipc::json& msg, const char* key) {
@@ -299,15 +320,15 @@ HH_TEST(Ipc_makeStatus) {
  *        and the paths as UTF-8, and Unix-millisecond timestamps.
  */
 HH_TEST(Ipc_jobToJson) {
-    Job job = makeJob(5, JobState::Muxing, TransferKind::PQ, L"C:\\x\\clip.mp4");
+    Job job = makeJob(5, JobState::Muxing, TransferKind::PQ, samplePath(L"C:\\x\\clip.mp4"));
     job.generation = 2;
     job.phase = L"Muxing";
     job.progress = 0.5f;
-    job.hintPath = L"C:\\x\\clip_REC709_HINT.mkv";
+    job.hintPath = samplePath(L"C:\\x\\clip_REC709_HINT.mkv");
     job.stateReason = L"";
     job.plan.presetId = L"generic_pq_1000";
     job.plan.suffix = L"_REC709_HINT";
-    job.plan.lutPath = L"C:\\luts\\pq.cube";
+    job.plan.lutPath = samplePath(L"C:\\luts\\pq.cube");
     job.plan.attachLut = true;
     job.createdUtc = platform::unixMsToUtc(1789432106000);
     job.updatedUtc = platform::unixMsToUtc(1789432107000);
@@ -322,15 +343,15 @@ HH_TEST(Ipc_jobToJson) {
     CHECK_NEAR(ipc::num(j, "progress"), 0.5, 1e-9);
 
     // Paths: UTF-8 on the wire, back to the same wide string.
-    CHECK_EQ(ipc::str(j, "outputPath"), platform::toUtf8(L"C:\\x\\clip.mp4"));
-    CHECK_WEQ(ipc::wstr(j, "outputPath"), L"C:\\x\\clip.mp4");
-    CHECK_WEQ(ipc::wstr(j, "hintPath"), L"C:\\x\\clip_REC709_HINT.mkv");
+    CHECK_EQ(ipc::str(j, "outputPath"), platform::toUtf8(samplePath(L"C:\\x\\clip.mp4")));
+    CHECK_WEQ(ipc::wstr(j, "outputPath"), samplePath(L"C:\\x\\clip.mp4"));
+    CHECK_WEQ(ipc::wstr(j, "hintPath"), samplePath(L"C:\\x\\clip_REC709_HINT.mkv"));
     CHECK_WEQ(ipc::wstr(j, "key"), job.key);
 
     // Effective plan, no overrides yet.
     CHECK_EQ(ipc::str(j, "presetId"), "generic_pq_1000");
     CHECK_EQ(ipc::str(j, "suffix"), "_REC709_HINT");
-    CHECK_WEQ(ipc::wstr(j, "lutPath"), L"C:\\luts\\pq.cube");
+    CHECK_WEQ(ipc::wstr(j, "lutPath"), samplePath(L"C:\\luts\\pq.cube"));
     CHECK(ipc::boolean(j, "attachLut"));
 
     // Timestamps as Unix milliseconds.
@@ -349,10 +370,10 @@ HH_TEST(Ipc_jobToJson) {
     CHECK_FALSE(ipc::boolean(j2, "attachLut", true));
 
     // Other states and transfers use their canonical names.
-    const ipc::json held = ipc::jobToJson(makeJob(6, JobState::Held, TransferKind::Unknown, L"C:\\x\\b.mp4"));
+    const ipc::json held = ipc::jobToJson(makeJob(6, JobState::Held, TransferKind::Unknown, samplePath(L"C:\\x\\b.mp4")));
     CHECK_EQ(ipc::str(held, "state"), "Held");
     CHECK_EQ(ipc::str(held, "transfer"), "Unknown");
-    const ipc::json skipped = ipc::jobToJson(makeJob(7, JobState::SkippedSdr, TransferKind::SDR, L"C:\\x\\c.mp4"));
+    const ipc::json skipped = ipc::jobToJson(makeJob(7, JobState::SkippedSdr, TransferKind::SDR, samplePath(L"C:\\x\\c.mp4")));
     CHECK_EQ(ipc::str(skipped, "state"), "SkippedSdr");
     CHECK_EQ(ipc::str(skipped, "transfer"), "SDR");
 }
@@ -362,7 +383,7 @@ HH_TEST(Ipc_jobToJson) {
  *        through a full line() -> parseLine() trip.
  */
 HH_TEST(Ipc_jobToJsonRoundTripsNonAsciiPaths) {
-    const std::wstring path = L"D:\\Renders\\\u00c9pisode 04 \u65e5\u672c\u8a9e.mp4";
+    const std::wstring path = samplePath(L"D:\\Renders\\\u00c9pisode 04 \u65e5\u672c\u8a9e.mp4");
     const Job job = makeJob(9, JobState::Ready, TransferKind::HLG, path);
 
     const ipc::json j = ipc::jobToJson(job);
@@ -389,8 +410,8 @@ HH_TEST(Ipc_jobToJsonRoundTripsNonAsciiPaths) {
  */
 HH_TEST(Ipc_makeJobsEventListsEveryJob) {
     std::vector<Job> jobs;
-    jobs.push_back(makeJob(1, JobState::Encoding, TransferKind::HLG, L"C:\\a\\one.mp4"));
-    jobs.push_back(makeJob(2, JobState::Done, TransferKind::PQ, L"C:\\a\\two.mp4"));
+    jobs.push_back(makeJob(1, JobState::Encoding, TransferKind::HLG, samplePath(L"C:\\a\\one.mp4")));
+    jobs.push_back(makeJob(2, JobState::Done, TransferKind::PQ, samplePath(L"C:\\a\\two.mp4")));
 
     const ipc::json ev = ipc::makeJobsEvent(jobs);
     CHECK_EQ(ipc::kindOf(ev), "jobs");

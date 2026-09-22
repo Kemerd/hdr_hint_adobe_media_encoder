@@ -51,6 +51,15 @@ struct Choice {
     std::wstring subtitle;
 };
 
+/**
+ * @brief Value of the "Choose a .cube file..." entry in every LUT chooser.
+ *
+ * '?' and ':' are illegal in Windows file names, so this can never collide
+ * with a real LUT path. Screens that see it selected call browseLut()
+ * instead of treating it as a path.
+ */
+inline constexpr const wchar_t* kBrowseLutValue = L"?hdrhint:browse-lut?";
+
 class IQueueViewModel {
 public:
     virtual ~IQueueViewModel() = default;
@@ -64,6 +73,8 @@ public:
     virtual void reveal(JobId id, bool hintFile) = 0;
     virtual void setPreset(JobId id, const std::wstring& presetId) = 0;
     virtual void setLut(JobId id, const std::wstring& lutPath) = 0;
+    /// Opens a .cube picker and applies the result to the job; no-op on cancel.
+    virtual void browseLut(JobId id) = 0;
     virtual void setAttachLut(JobId id, bool attach) = 0;
     virtual void copyCommand(JobId id) = 0;
     [[nodiscard]] virtual bool autoProcess() const = 0;
@@ -116,6 +127,8 @@ public:
     virtual void setLutFolder(const std::wstring& path) = 0;
     virtual void browseLutFolder() = 0;
     virtual void setDefaultLut(TransferKind t, const std::wstring& path) = 0;
+    /// Opens a .cube picker and stores the result as the default for t.
+    virtual void browseLut(TransferKind t) = 0;
     virtual void setDefaultPreset(TransferKind t, const std::wstring& presetId) = 0;
     virtual void setSuffix(const std::wstring& suffix) = 0;
     virtual void setAttachLutByDefault(bool on) = 0;
@@ -147,6 +160,7 @@ struct LinkView {
     bool logFound = false;
     bool queueRunning = false;
     bool docked = false;
+    bool dockingSupported = true;   ///< false on macOS: the dock toggles hide themselves
     std::wstring tooltip;
 };
 

@@ -23,9 +23,11 @@
 #include "platform/Utf.h"
 
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <string>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -166,12 +168,12 @@ void FileReadiness::start(const ReadinessConfig& config) {
     config_ = sanitize(config);
 
     // Manual-reset stop event, auto-reset wake event.
-    stopEvent_ = platform::makeEvent(true);
-    wakeEvent_ = platform::makeEvent(false);
+    stopEvent_ = platform::makeWaitableEvent(true);
+    wakeEvent_ = platform::makeWaitableEvent(false);
     if (!stopEvent_ || !wakeEvent_) {
         HH_LOG_ERROR(kLog, L"could not create thread events: {}", Error::fromLastError(L"CreateEvent").toString());
-        stopEvent_.reset();
-        wakeEvent_.reset();
+        stopEvent_.close();
+        wakeEvent_.close();
         return;
     }
 
@@ -196,7 +198,7 @@ void FileReadiness::stop() {
     // Flip the flag first so a loop iteration in flight exits promptly.
     running_.store(false);
     if (stopEvent_) {
-        ::SetEvent(stopEvent_.get());
+        stopEvent_.set();
     }
     if (thread_.joinable()) {
         if (thread_.get_id() == std::this_thread::get_id()) {
@@ -213,8 +215,8 @@ void FileReadiness::stop() {
         std::lock_guard<std::mutex> lock(mutex_);
         probes_.clear();
     }
-    stopEvent_.reset();
-    wakeEvent_.reset();
+    stopEvent_.close();
+    wakeEvent_.close();
 }
 
 // ---------------------------------------------------------------------------
@@ -251,7 +253,7 @@ void FileReadiness::schedule(JobId jobId, const std::wstring& path, bool require
         probes_[jobId] = std::move(p);
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
     HH_LOG_INFO(kLog, L"job {}: probing '{}' (confirmation {})", jobId, full,
                 requireConfirmation ? L"required" : L"not required");
@@ -279,7 +281,7 @@ void FileReadiness::confirm(JobId jobId) {
         return;
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
     HH_LOG_INFO(kLog, L"job {}: confirmed by log/CEP", jobId);
 }
@@ -307,7 +309,7 @@ void FileReadiness::fail(JobId jobId, const std::wstring& reason) {
         return;
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
     HH_LOG_INFO(kLog, L"job {}: failure reported: {}", jobId, reason);
 }
@@ -366,15 +368,15 @@ void FileReadiness::threadMain() {
         }
 
         // Sleep on {stop, wake}; a timeout simply means something is due.
-        HANDLE handles[2] = {stopEvent_.get(), wakeEvent_.get()};
-        const DWORD r = ::WaitForMultipleObjects(2, handles, FALSE, waitMs);
-        if (r == WAIT_OBJECT_0) {
+        const platform::WaitHandle handles[2] = {stopEvent_.handle(), wakeEvent_.handle()};
+        const DWORD r = platform::waitAny(handles, 2, waitMs);
+        if (r == 0) {
             break;
         }
-        if (r == WAIT_FAILED) {
+        if (r == platform::kWaitFailed) {
             // Should never happen with valid events; avoid a hot loop anyway.
-            HH_LOG_ERROR(kLog, L"WaitForMultipleObjects failed: {}", Error::fromLastError(L"wait").toString());
-            ::Sleep(1000);
+            HH_LOG_ERROR(kLog, L"wait failed: {}", Error::fromLastError(L"wait").toString());
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             continue;
         }
         if (!running_.load()) {
@@ -523,10 +525,9 @@ void FileReadiness::runProbe(JobId id, Probe& p, uint64_t nowMs) {
 
     // Step 1: existence. A missing file is tolerated for the grace period
     // (AME may delete and recreate the output when a queue item restarts).
-    const std::wstring ext = platform::toExtendedPath(p.path);
-    WIN32_FILE_ATTRIBUTE_DATA fad{};
-    if (!::GetFileAttributesExW(ext.c_str(), GetFileExInfoStandard, &fad)) {
-        const DWORD err = ::GetLastError();
+    const auto attributes = platform::fileAttributes(p.path);
+    if (!attributes) {
+        const DWORD err = attributes.error().win32;
         const bool notFound = (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND);
         const uint64_t graceMs = static_cast<uint64_t>(config_.missingGraceS) * 1000ull;
         if (p.lastSeenMs != 0 && nowMs >= p.lastSeenMs && nowMs - p.lastSeenMs > graceMs) {
@@ -543,11 +544,12 @@ void FileReadiness::runProbe(JobId id, Probe& p, uint64_t nowMs) {
         reschedule(false);
         return;
     }
-    if ((fad.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+    const platform::FileAttributes& fad = attributes.value();
+    if (fad.isDirectory) {
         postFailed(L"Output path is a directory", 0);
         return;
     }
-    const uint64_t size = (static_cast<uint64_t>(fad.nFileSizeHigh) << 32) | static_cast<uint64_t>(fad.nFileSizeLow);
+    const uint64_t size = fad.size;
     p.lastSeenMs = nowMs;
 
     // Step 2: deny-write open. Only a writer (AME's exclusive handle) trips
@@ -696,8 +698,8 @@ void FileReadiness::runProbe(JobId id, Probe& p, uint64_t nowMs) {
     } else {
         HH_LOG_WARN(kLog, L"job {}: could not read file identity: {}", id, ident.error().toString());
         ev.stamp.size = size;
-        ev.stamp.lastWriteUtc = platform::fileTimeToUint64(fad.ftLastWriteTime);
-        ev.stamp.creationUtc = platform::fileTimeToUint64(fad.ftCreationTime);
+        ev.stamp.lastWriteUtc = fad.lastWriteUtc;
+        ev.stamp.creationUtc = fad.creationUtc;
         ev.stamp.valid = false;
     }
     HH_LOG_INFO(kLog, L"job {}: ready '{}' ({} bytes, {} attempts)", id, p.path, size, p.attempts);

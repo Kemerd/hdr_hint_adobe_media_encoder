@@ -5,7 +5,7 @@
 
 #include "core/EngineEvents.h"
 #include "platform/DirectoryWatch.h"
-#include "platform/Handle.h"
+#include "platform/Event.h"
 #include "platform/Win.h"
 
 #include <atomic>
@@ -80,8 +80,8 @@ private:
 
     std::thread thread_;
     std::atomic<bool> running_{false};
-    platform::UniqueHandle stopEvent_;
-    platform::UniqueHandle wakeEvent_;
+    platform::Event stopEvent_;
+    platform::Event wakeEvent_;
     std::vector<std::unique_ptr<Watched>> watched_;
 };
 

@@ -94,6 +94,13 @@ void Canvas::begin(ID2D1DeviceContext1* ctx, const DipScale& scale, const Theme&
 }
 
 /**
+ * @brief The Direct2D context of the current frame.
+ */
+NativeDrawContext Canvas::ctx() const noexcept {
+    return ctx_.Get();
+}
+
+/**
  * @brief Pops whatever a widget forgot to pop and forgets the context.
  */
 void Canvas::end() {
@@ -406,6 +413,118 @@ void Canvas::drawFocusRing(const Rect& r, float radius, const Color& c) {
     strokeRoundedRect(r.inset(-2.0f), radius + 2.0f, c, 2.0f);
 }
 
+// ---- paths --------------------------------------------------------------------
+
+namespace {
+
+/**
+ * @brief Builds a path geometry from points (optionally closed / filled).
+ */
+ComPtr<ID2D1PathGeometry> buildPath(ID2D1DeviceContext1* ctx, const Point* pts, size_t count, bool closed, bool filled) {
+    if (ctx == nullptr || pts == nullptr || count < 2) {
+        return nullptr;
+    }
+    ComPtr<ID2D1Factory> factory;
+    ctx->GetFactory(factory.GetAddressOf());
+    if (!factory) {
+        return nullptr;
+    }
+    ComPtr<ID2D1PathGeometry> geometry;
+    if (FAILED(factory->CreatePathGeometry(geometry.GetAddressOf())) || !geometry) {
+        return nullptr;
+    }
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(geometry->Open(sink.GetAddressOf())) || !sink) {
+        return nullptr;
+    }
+    // One figure through every point; filled figures are always closed.
+    sink->BeginFigure(pts[0].toD2D(), filled ? D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN_HOLLOW);
+    for (size_t i = 1; i < count; ++i) {
+        sink->AddLine(pts[i].toD2D());
+    }
+    sink->EndFigure((closed || filled) ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
+    if (FAILED(sink->Close())) {
+        return nullptr;
+    }
+    return geometry;
+}
+
+} // namespace
+
+/**
+ * @brief Strokes a polyline with round caps/joins.
+ */
+void Canvas::strokePolyline(const Point* points, size_t count, bool closed, const Color& c, float width) {
+    if (!ctx_ || points == nullptr || count < 2 || c.a <= 0.0f) {
+        return;
+    }
+    if (count == 2) {
+        // Two points: the plain line already has round caps.
+        drawLine(points[0], points[1], c, width);
+        return;
+    }
+    ComPtr<ID2D1PathGeometry> geo = buildPath(ctx_.Get(), points, count, closed, false);
+    ID2D1SolidColorBrush* b = brush(c);
+    if (!geo || b == nullptr) {
+        return;
+    }
+    ctx_->DrawGeometry(geo.Get(), b, (width <= 0.0f) ? scale_.hairline() : width, roundStroke_.Get());
+}
+
+/**
+ * @brief Fills a polygon.
+ */
+void Canvas::fillPolygon(const Point* points, size_t count, const Color& c) {
+    if (!ctx_ || points == nullptr || count < 3 || c.a <= 0.0f) {
+        return;
+    }
+    ComPtr<ID2D1PathGeometry> geo = buildPath(ctx_.Get(), points, count, true, true);
+    ID2D1SolidColorBrush* b = brush(c);
+    if (!geo || b == nullptr) {
+        return;
+    }
+    ctx_->FillGeometry(geo.Get(), b, nullptr);
+}
+
+/**
+ * @brief Strokes the almond (eye) outline: two symmetric arcs between the corners.
+ */
+void Canvas::strokeLens(Point left, Point right, float bulge, const Color& c, float width) {
+    if (!ctx_ || c.a <= 0.0f) {
+        return;
+    }
+    ComPtr<ID2D1Factory> factory;
+    ctx_->GetFactory(factory.GetAddressOf());
+    if (!factory) {
+        return;
+    }
+    ComPtr<ID2D1PathGeometry> geometry;
+    if (FAILED(factory->CreatePathGeometry(geometry.GetAddressOf())) || !geometry) {
+        return;
+    }
+    ComPtr<ID2D1GeometrySink> sink;
+    if (FAILED(geometry->Open(sink.GetAddressOf())) || !sink) {
+        return;
+    }
+    // The arc radius follows from the chord and the requested bulge (sagitta).
+    const float chord = std::max(0.001f, right.x - left.x);
+    const float half = chord * 0.5f;
+    const float s = std::max(0.001f, bulge);
+    const float radius = (half * half + s * s) / (2.0f * s);
+    sink->BeginFigure(left.toD2D(), D2D1_FIGURE_BEGIN_HOLLOW);
+    sink->AddArc(D2D1::ArcSegment(right.toD2D(), D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+    sink->AddArc(D2D1::ArcSegment(left.toD2D(), D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
+    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+    if (FAILED(sink->Close())) {
+        return;
+    }
+    ID2D1SolidColorBrush* b = brush(c);
+    if (b == nullptr) {
+        return;
+    }
+    ctx_->DrawGeometry(geometry.Get(), b, width, nullptr);
+}
+
 // ---- text -------------------------------------------------------------------
 
 /**
@@ -458,6 +577,13 @@ Size Canvas::measureText(std::wstring_view text, const TextStyle& style, float m
         return text_->measure(text, style, maxWidth, maxLines);
     }
     return measureTextShared(text, style, maxWidth, maxLines);
+}
+
+/**
+ * @brief Draws a layout from the TextCache at the origin.
+ */
+void Canvas::drawTextLayout(const TextLayoutRef& layout, Point origin, const Color& c) {
+    drawTextLayout(layout.Get(), origin, c);
 }
 
 /**
@@ -553,6 +679,13 @@ void Canvas::pushOpacity(float opacity) {
                                                                   nullptr, D2D1_LAYER_OPTIONS1_NONE);
     ctx_->PushLayer(&params, nullptr);
     stack_.push_back({StackKind::Layer, {}});
+}
+
+/**
+ * @brief Portable transform: the same pre-multiplication as the D2D overload.
+ */
+void Canvas::pushTransform(const Transform2D& m) {
+    pushTransform(m.toD2D());
 }
 
 /**

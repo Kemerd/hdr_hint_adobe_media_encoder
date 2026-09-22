@@ -1,6 +1,10 @@
 // ---------------------------------------------------------------------------
-// WindowServices.h - what a RootView needs from the HWND that hosts it.
-// Implemented by WindowHost (main window) and PopupWindow (menus).
+// WindowServices.h - what a RootView needs from the native window that hosts it.
+//
+// Implemented by WindowHost / PopupWindow on Windows (HWNDs) and by the
+// Cocoa host (NSWindow / NSPanel) on macOS. Everything widgets call is
+// platform-neutral; the pixel-space helpers the Win32 code uses internally
+// are declared for Windows only.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -26,18 +30,23 @@ public:
     virtual void requestFrame() = 0;
     virtual void setCursor(CursorKind cursor) = 0;
     virtual void captureMouse(bool capture) = 0;
-    [[nodiscard]] virtual HWND hwnd() const = 0;
     [[nodiscard]] virtual DipScale dipScale() const = 0;
     /// Client size in dips.
     [[nodiscard]] virtual Size clientSizeDips() const = 0;
+    /// Usable area (work area / visible frame) of the display the window is on, in dips.
+    [[nodiscard]] virtual Size workAreaSizeDips() const = 0;
+    [[nodiscard]] virtual bool isActiveWindow() const = 0;
+
+#if defined(_WIN32)
+    [[nodiscard]] virtual HWND hwnd() const = 0;
     /// Root-space dips -> screen pixels.
     [[nodiscard]] virtual POINT rootToScreenPx(Point rootPt) const = 0;
     /// Screen pixels -> root-space dips.
     [[nodiscard]] virtual Point screenPxToRoot(POINT pt) const = 0;
-    [[nodiscard]] virtual bool isActiveWindow() const = 0;
+#endif
 
     /**
-     * @brief Opens a separate popup HWND with @p content (menus).
+     * @brief Opens a separate popup window with @p content (menus).
      * @param anchorRoot   opener rect in root dips of THIS window
      * @param contentSize  measured size of the content in dips
      * @param onDismiss    called when the popup closes for any reason

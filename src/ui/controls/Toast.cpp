@@ -323,7 +323,7 @@ void ToastView::paint(Canvas& c) {
     const float dy = slide_.value();
     const bool sliding = std::isfinite(dy) && dy != 0.0f;
     if (sliding) {
-        c.pushTransform(D2D1::Matrix3x2F::Translation(0.0f, c.scale().snap(dy)));
+        c.pushTransform(Transform2D::translation(0.0f, c.scale().snap(dy)));
     }
     Widget::paint(c);
     if (sliding) {

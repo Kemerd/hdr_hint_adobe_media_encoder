@@ -17,6 +17,7 @@
 #include "platform/Utf.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <initializer_list>
 #include <string>
 #include <vector>
@@ -216,13 +217,14 @@ std::wstring Settings::defaultPath() {
  */
 void Settings::applyMachineDefaults() {
     if (platform::trim(lutFolder).empty()) {
-        lutFolder = std::wstring(kExeToken) + L"\\luts";
+        lutFolder = path::join(kExeToken, L"luts");
     }
     if (platform::trim(pqLutPath).empty()) {
         pqLutPath = path::join(lutFolder, kDefaultPqLutName);
     }
     if (platform::trim(userPresetsFile).empty()) {
-        userPresetsFile = L"%APPDATA%\\HdrHint\\presets.json";
+        // %APPDATA% is understood on macOS too (see expand()), so one spelling serves both.
+        userPresetsFile = path::join(path::join(L"%APPDATA%", L"HdrHint"), L"presets.json");
     }
 }
 
@@ -523,8 +525,9 @@ std::wstring Settings::expand(std::wstring_view path) const {
     std::wstring s(t);
 
     // "<exe>" token, any case, any number of times (bounded so a pathological
-    // value can never spin here).
-    const std::wstring exeDir = platform::exeDirectory();
+    // value can never spin here). It names where the shipped files live: the
+    // exe's folder on Windows, the bundle's Resources folder on macOS.
+    const std::wstring exeDir = platform::resourceDirectory();
     for (int guard = 0; guard < 16; ++guard) {
         const size_t pos = platform::ifind(s, kExeToken);
         if (pos == std::wstring::npos) {
@@ -533,6 +536,55 @@ std::wstring Settings::expand(std::wstring_view path) const {
         s.replace(pos, 5, exeDir);
     }
 
+#if !defined(_WIN32)
+    // POSIX: "~/" is the home folder; %VAR% understands the Windows folder
+    // names settings files carry (APPDATA, LOCALAPPDATA, TEMP, USERPROFILE)
+    // and falls back to the process environment for anything else.
+    if (s.size() >= 2 && s[0] == L'~' && s[1] == L'/') {
+        const char* home = ::getenv("HOME");
+        if (home != nullptr && *home != '\0') {
+            s = platform::toWide(home) + s.substr(1);
+        }
+    }
+    for (int guard = 0; guard < 16; ++guard) {
+        const size_t open = s.find(L'%');
+        if (open == std::wstring::npos) {
+            break;
+        }
+        const size_t close = s.find(L'%', open + 1);
+        if (close == std::wstring::npos) {
+            break;
+        }
+        const std::wstring name = s.substr(open + 1, close - open - 1);
+        std::wstring value;
+        if (platform::iequals(name, L"APPDATA")) {
+            value = platform::roamingAppDataFolder();
+        } else if (platform::iequals(name, L"LOCALAPPDATA")) {
+            value = platform::localAppDataFolder();
+        } else if (platform::iequals(name, L"TEMP") || platform::iequals(name, L"TMP")) {
+            value = platform::tempFolder();
+        } else if (platform::iequals(name, L"USERPROFILE") || platform::iequals(name, L"HOME")) {
+            const char* home = ::getenv("HOME");
+            value = home ? platform::toWide(home) : std::wstring();
+        } else if (!name.empty()) {
+            const char* env = ::getenv(platform::toUtf8(name).c_str());
+            value = env ? platform::toWide(env) : std::wstring();
+        }
+        if (value.empty()) {
+            break;   // unknown variables stay verbatim, as ExpandEnvironmentStrings leaves them
+        }
+        s.replace(open, close - open + 1, value);
+    }
+    // A value written on Windows ("%APPDATA%\\HdrHint\\presets.json") keeps its
+    // backslashes after the expansion; they are separators, not file-name characters.
+    if (s.find(L'\\') != std::wstring::npos && s.find(L'/') != std::wstring::npos) {
+        for (wchar_t& c : s) {
+            if (c == L'\\') {
+                c = L'/';
+            }
+        }
+    }
+#else
     // %ENV% variables via the Win32 expander (size query first).
     if (s.find(L'%') != std::wstring::npos) {
         const DWORD needed = ::ExpandEnvironmentStringsW(s.c_str(), nullptr, 0);
@@ -547,6 +599,7 @@ std::wstring Settings::expand(std::wstring_view path) const {
             }
         }
     }
+#endif
     return s;
 }
 

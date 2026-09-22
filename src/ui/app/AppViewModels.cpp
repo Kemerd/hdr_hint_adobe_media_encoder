@@ -9,15 +9,12 @@
 #include "core/MkvmergeRunner.h"
 #include "core/PathUtil.h"
 #include "platform/FileIo.h"
-#include "platform/Handle.h"
 #include "platform/KnownFolders.h"
 #include "platform/RecycleBin.h"
+#include "platform/Terms.h"
 #include "platform/Utf.h"
 #include "ui/app/GuideResource.h"
 #include "ui/screens/GuideContent.h"
-
-#include <shobjidl_core.h>
-#include <winver.h>
 
 #include <algorithm>
 #include <cmath>
@@ -30,9 +27,6 @@ namespace hh::ui {
 namespace {
 
 constexpr const wchar_t* kLog = L"ViewModel";
-
-/// Version shown when the executable carries no VERSIONINFO (tests, stripped builds).
-constexpr const wchar_t* kFallbackVersion = L"1.0.0";
 
 /// Product name used in the About line.
 constexpr const wchar_t* kProductName = L"HDR Hint";
@@ -221,99 +215,15 @@ ThemeMode themeModeFor(int index) noexcept {
 
 } // namespace
 
-// ===========================================================================
-// Free helpers
-// ===========================================================================
-
-bool copyTextToClipboard(HWND owner, std::wstring_view text) {
-    // Another process may hold the clipboard for a moment; a few short retries
-    // cover the common case (a clipboard manager peeking) without stalling the UI.
-    bool opened = false;
-    for (int attempt = 0; attempt < 5 && !opened; ++attempt) {
-        opened = ::OpenClipboard(owner) != FALSE;
-        if (!opened) {
-            ::Sleep(10);
-        }
-    }
-    if (!opened) {
-        HH_LOG_WARN(kLog, L"OpenClipboard failed ({})", ::GetLastError());
-        return false;
-    }
-
-    bool ok = false;
-    if (!::EmptyClipboard()) {
-        HH_LOG_WARN(kLog, L"EmptyClipboard failed ({})", ::GetLastError());
-    } else {
-        // CF_UNICODETEXT wants a movable global block with a terminating NUL.
-        const size_t bytes = (text.size() + 1) * sizeof(wchar_t);
-        HGLOBAL global = ::GlobalAlloc(GMEM_MOVEABLE, bytes);
-        if (!global) {
-            HH_LOG_WARN(kLog, L"GlobalAlloc({}) failed ({})", bytes, ::GetLastError());
-        } else {
-            void* memory = ::GlobalLock(global);
-            if (!memory) {
-                HH_LOG_WARN(kLog, L"GlobalLock failed ({})", ::GetLastError());
-            } else {
-                if (!text.empty()) {
-                    std::memcpy(memory, text.data(), text.size() * sizeof(wchar_t));
-                }
-                static_cast<wchar_t*>(memory)[text.size()] = L'\0';
-                ::GlobalUnlock(global);
-                // On success the clipboard owns the block; on failure we free it.
-                if (::SetClipboardData(CF_UNICODETEXT, global)) {
-                    ok = true;
-                    global = nullptr;
-                } else {
-                    HH_LOG_WARN(kLog, L"SetClipboardData failed ({})", ::GetLastError());
-                }
-            }
-            if (global) {
-                ::GlobalFree(global);
-            }
-        }
-    }
-    ::CloseClipboard();
-    return ok;
-}
-
-std::wstring appVersionString() {
-    // The exe never changes while running; read the version block once.
-    static const std::wstring cached = []() -> std::wstring {
-        const std::wstring exe = platform::exePath();
-        if (exe.empty()) {
-            return kFallbackVersion;
-        }
-        DWORD ignored = 0;
-        const DWORD size = ::GetFileVersionInfoSizeW(exe.c_str(), &ignored);
-        if (size == 0) {
-            HH_LOG_DEBUG(kLog, L"no VERSIONINFO in {} ({})", exe, ::GetLastError());
-            return kFallbackVersion;
-        }
-        std::vector<uint8_t> block(size);
-        if (!::GetFileVersionInfoW(exe.c_str(), 0, size, block.data())) {
-            HH_LOG_DEBUG(kLog, L"GetFileVersionInfoW failed ({})", ::GetLastError());
-            return kFallbackVersion;
-        }
-        // The root block is the fixed info: product version as two DWORDs.
-        VS_FIXEDFILEINFO* fixed = nullptr;
-        UINT length = 0;
-        if (!::VerQueryValueW(block.data(), L"\\", reinterpret_cast<void**>(&fixed), &length) || !fixed ||
-            length < sizeof(VS_FIXEDFILEINFO)) {
-            return kFallbackVersion;
-        }
-        const unsigned major = HIWORD(fixed->dwProductVersionMS);
-        const unsigned minor = LOWORD(fixed->dwProductVersionMS);
-        const unsigned patch = HIWORD(fixed->dwProductVersionLS);
-        return std::format(L"{}.{}.{}", major, minor, patch);
-    }();
-    return cached;
-}
+// The .cube picker lives further down, next to the settings view model that
+// uses it most; both view models need it, so declare it here.
+static std::wstring pickCubeFile(NativeWindowHandle owner, const std::wstring& startFolder);
 
 // ===========================================================================
 // AppQueueViewModel
 // ===========================================================================
 
-AppQueueViewModel::AppQueueViewModel(hh::Engine& engine, HWND ownerForDialogs)
+AppQueueViewModel::AppQueueViewModel(hh::Engine& engine, NativeWindowHandle ownerForDialogs)
     : engine_(engine), owner_(ownerForDialogs), alive_(std::make_shared<bool>(true)) {}
 
 /**
@@ -456,7 +366,7 @@ std::wstring AppQueueViewModel::commandFor(const Job& job, const EffectivePlan& 
 
     MuxPlan m;
     // Not found yet: show the bare name so the preview is still readable.
-    m.mkvmergePath = info.path.empty() ? std::wstring(L"mkvmerge.exe") : info.path;
+    m.mkvmergePath = info.path.empty() ? std::wstring(platform::terms::kMkvmergeExe) : info.path;
     m.supportsUiLanguage = info.supportsUiLanguage;
     m.inputPath = job.outputPath;
     m.hintPath = plan.hintPath;
@@ -511,6 +421,8 @@ std::vector<Choice> AppQueueViewModel::lutChoices() const {
         c.subtitle = path::parent(lut);
         out.push_back(std::move(c));
     }
+    // Last entry: reach any .cube on disk, not just the folder and recents.
+    out.push_back(Choice{L"Choose a .cube file...", kBrowseLutValue, std::wstring()});
     return out;
 }
 
@@ -589,6 +501,41 @@ void AppQueueViewModel::setLut(JobId id, const std::wstring& lutPath) {
     engine_.setJobOverrides(id, o);
 }
 
+/**
+ * @brief Picks a .cube from disk and applies it to one job.
+ *
+ * Starts in the folder of whatever the job already uses, so replacing a LUT
+ * with its neighbour is two clicks. The engine remembers the file, which puts
+ * it in every chooser from now on.
+ */
+void AppQueueViewModel::browseLut(JobId id) {
+    const std::optional<Job> job = engine_.job(id);
+    if (!job) {
+        HH_LOG_WARN(kLog, L"browseLut: unknown job {}", id);
+        return;
+    }
+    // Start next to the LUT this job currently resolves to, else the folder.
+    std::wstring start;
+    if (job->overrides.lutPath && !job->overrides.lutPath->empty()) {
+        start = path::parent(engine_.settings().expand(*job->overrides.lutPath));
+    }
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = engine_.settings().expand(engine_.settings().lutFolder);
+    }
+    const std::wstring picked = pickCubeFile(owner_, start);
+    if (picked.empty()) {
+        // Cancelled: re-render so the card's pop-up leaves the "Choose..."
+        // entry and shows the LUT the job actually uses.
+        notify();
+        return;
+    }
+    HH_LOG_INFO(kLog, L"job {} LUT picked from disk: '{}'", id, picked);
+    // Remembering it first means the pop-up already lists the file when the
+    // override lands and the card refreshes.
+    engine_.rememberLut(picked);
+    setLut(id, picked);
+}
+
 void AppQueueViewModel::setAttachLut(JobId id, bool attach) {
     const std::optional<Job> job = engine_.job(id);
     if (!job) {
@@ -639,7 +586,7 @@ void AppQueueViewModel::addFiles(const std::vector<std::wstring>& paths) {
 // AppSettingsViewModel
 // ===========================================================================
 
-AppSettingsViewModel::AppSettingsViewModel(hh::Engine& engine, hh::Settings& settings, ThemeManager& themes, HWND owner)
+AppSettingsViewModel::AppSettingsViewModel(hh::Engine& engine, hh::Settings& settings, ThemeManager& themes, NativeWindowHandle owner)
     : engine_(engine), settings_(settings), themes_(themes), owner_(owner) {}
 
 void AppSettingsViewModel::notify() {
@@ -778,87 +725,27 @@ std::vector<Choice> AppSettingsViewModel::lutChoices() const {
         c.subtitle = path::parent(lut);
         out.push_back(std::move(c));
     }
+    // Last entry: reach any .cube on disk, not just the folder and recents.
+    out.push_back(Choice{L"Choose a .cube file...", kBrowseLutValue, std::wstring()});
     return out;
 }
 
 // ---- file dialogs --------------------------------------------------------
 
+/**
+ * @brief Picks a .cube file, starting wherever the current value points.
+ *
+ * The same dialog for the settings defaults and for a single job's LUT
+ * override, so a LUT that lives nowhere near the configured LUT folder is
+ * always one click away.
+ */
+static std::wstring pickCubeFile(NativeWindowHandle owner, const std::wstring& startFolder) {
+    return showPathPicker(owner, false, L"Choose a LUT (.cube)", startFolder, L"Cube LUT (*.cube)", L"*.cube");
+}
+
 std::wstring AppSettingsViewModel::pickPath(bool pickFolder, const wchar_t* title, const std::wstring& startFolder,
                                             const wchar_t* filterLabel, const wchar_t* filterPattern) const {
-    // COM is initialised by the app on the UI thread; a failure here is logged, not fatal.
-    platform::ComPtr<IFileOpenDialog> dialog;
-    HRESULT hr = ::CoCreateInstance(__uuidof(FileOpenDialog), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
-    if (FAILED(hr) || !dialog) {
-        HH_LOG_ERROR(kLog, L"CoCreateInstance(FileOpenDialog) failed: {}", hresultText(hr));
-        return {};
-    }
-
-    // File-system items only; folders when asked; never change the process cwd.
-    DWORD options = 0;
-    hr = dialog->GetOptions(&options);
-    if (SUCCEEDED(hr)) {
-        options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST | FOS_NOCHANGEDIR;
-        options |= pickFolder ? FOS_PICKFOLDERS : FOS_FILEMUSTEXIST;
-        hr = dialog->SetOptions(options);
-    }
-    if (FAILED(hr)) {
-        HH_LOG_WARN(kLog, L"IFileOpenDialog options failed: {}", hresultText(hr));
-    }
-    if (title && *title) {
-        if (FAILED(dialog->SetTitle(title))) {
-            HH_LOG_DEBUG(kLog, L"IFileOpenDialog::SetTitle failed");
-        }
-    }
-
-    // A file filter narrows the list to what we can actually use.
-    if (!pickFolder && filterLabel && filterPattern) {
-        const COMDLG_FILTERSPEC specs[] = {
-            {filterLabel, filterPattern},
-            {L"All files", L"*.*"},
-        };
-        if (FAILED(dialog->SetFileTypes(static_cast<UINT>(std::size(specs)), specs))) {
-            HH_LOG_DEBUG(kLog, L"IFileOpenDialog::SetFileTypes failed");
-        } else if (FAILED(dialog->SetFileTypeIndex(1))) {
-            HH_LOG_DEBUG(kLog, L"IFileOpenDialog::SetFileTypeIndex failed");
-        }
-    }
-
-    // Start where the current value points, unless the shell remembers a better place.
-    if (!startFolder.empty() && platform::isDirectory(startFolder)) {
-        platform::ComPtr<IShellItem> folder;
-        hr = ::SHCreateItemFromParsingName(startFolder.c_str(), nullptr, IID_PPV_ARGS(&folder));
-        if (SUCCEEDED(hr) && folder) {
-            if (FAILED(dialog->SetDefaultFolder(folder.Get()))) {
-                HH_LOG_DEBUG(kLog, L"IFileOpenDialog::SetDefaultFolder failed");
-            }
-        }
-    }
-
-    // Modal on the owner; cancel is the normal exit, not an error.
-    hr = dialog->Show(owner_);
-    if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
-        return {};
-    }
-    if (FAILED(hr)) {
-        HH_LOG_WARN(kLog, L"IFileOpenDialog::Show failed: {}", hresultText(hr));
-        return {};
-    }
-
-    platform::ComPtr<IShellItem> item;
-    hr = dialog->GetResult(&item);
-    if (FAILED(hr) || !item) {
-        HH_LOG_WARN(kLog, L"IFileOpenDialog::GetResult failed: {}", hresultText(hr));
-        return {};
-    }
-    PWSTR raw = nullptr;
-    hr = item->GetDisplayName(SIGDN_FILESYSPATH, &raw);
-    if (FAILED(hr) || !raw) {
-        HH_LOG_WARN(kLog, L"IShellItem::GetDisplayName failed: {}", hresultText(hr));
-        return {};
-    }
-    // The shell allocated the string; free it once copied.
-    const platform::CoTaskMemPtr<wchar_t> holder(raw);
-    return std::wstring(raw);
+    return showPathPicker(owner_, pickFolder, title, startFolder, filterLabel, filterPattern);
 }
 
 void AppSettingsViewModel::browseMkvmerge() {
@@ -868,6 +755,7 @@ void AppSettingsViewModel::browseMkvmerge() {
     if (!configured.empty()) {
         start = path::parent(configured);
     }
+#if defined(_WIN32)
     if (start.empty() || !platform::isDirectory(start)) {
         start = path::join(platform::programFilesX64Folder(), L"MKVToolNix");
     }
@@ -881,12 +769,31 @@ void AppSettingsViewModel::browseMkvmerge() {
         return;
     }
     setMkvmergePath(picked);
+#else
+    // macOS: the MKVToolNix app bundle or the bare binary (Homebrew) both work.
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = platform::programFilesX64Folder();
+    }
+    std::wstring picked = pickPath(false, L"Locate mkvmerge or the MKVToolNix app", start, L"mkvmerge", L"mkvmerge");
+    if (picked.empty()) {
+        return;
+    }
+    if (platform::iendsWith(picked, L".app")) {
+        picked = path::join(path::join(picked, L"Contents/MacOS"), L"mkvmerge");
+    }
+    // Any other executable would only produce confusing errors later.
+    if (!platform::iequals(path::fileName(picked), L"mkvmerge") || !platform::isFile(picked)) {
+        notifyUser(L"That is not mkvmerge: " + path::fileName(picked), false);
+        return;
+    }
+    setMkvmergePath(picked);
+#endif
 }
 
 void AppSettingsViewModel::browseLutFolder() {
     std::wstring start = settings_.expand(settings_.lutFolder);
     if (start.empty() || !platform::isDirectory(start)) {
-        start = platform::exeDirectory();
+        start = platform::resourceDirectory();
     }
     const std::wstring picked = pickPath(true, L"Choose the LUT folder", start, nullptr, nullptr);
     if (picked.empty()) {
@@ -949,6 +856,40 @@ void AppSettingsViewModel::setDefaultLut(TransferKind t, const std::wstring& pat
     }
     HH_LOG_INFO(kLog, L"default LUT for {} set to '{}'", toString(t), trimmed);
     commit();
+}
+
+/**
+ * @brief Picks a .cube from disk and stores it as the default for a transfer.
+ *
+ * The chooser only lists what the LUT folder and the recents hold, so this is
+ * the way to point at a LUT that lives anywhere else.
+ */
+void AppSettingsViewModel::browseLut(TransferKind t) {
+    // Start where the current default points, else in the configured folder.
+    std::wstring start;
+    const std::wstring current = settings_.defaultLutFor(static_cast<int>(t));
+    if (!current.empty()) {
+        start = path::parent(current);
+    }
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = settings_.expand(settings_.lutFolder);
+    }
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = platform::exeDirectory();
+    }
+    const std::wstring picked = pickCubeFile(owner_, start);
+    if (picked.empty()) {
+        // Cancelled: the pop-up is still showing the "Choose..." entry, so the
+        // screen has to re-sync it back to the configured LUT.
+        notify();
+        return;
+    }
+    // Remember it so it appears in this chooser and in every job's LUT list.
+    engine_.rememberLut(picked);
+    setDefaultLut(t, picked);
+    // setDefaultLut bails out when the value is unchanged, but the recents
+    // list just moved, so the screen still needs a repaint.
+    notify();
 }
 
 void AppSettingsViewModel::setDefaultPreset(TransferKind t, const std::wstring& presetId) {
@@ -1205,7 +1146,7 @@ void AppSettingsViewModel::reprobeMkvmerge() {
 // AppLinkViewModel
 // ===========================================================================
 
-AppLinkViewModel::AppLinkViewModel(hh::Engine& engine, hh::ame::DockController& dock)
+AppLinkViewModel::AppLinkViewModel(hh::Engine& engine, hh::ame::IDockControl& dock)
     : engine_(engine), dock_(dock), alive_(std::make_shared<bool>(true)) {}
 
 AppLinkViewModel::~AppLinkViewModel() {
@@ -1263,6 +1204,7 @@ LinkView AppLinkViewModel::link() const {
     v.logFound = s.logFound;
     v.queueRunning = s.queueRunning;
     v.docked = dock_.docked();
+    v.dockingSupported = dock_.supported();
 
     // Tooltip: one fact per line, most useful first.
     std::vector<std::wstring> lines;
@@ -1305,7 +1247,7 @@ void AppLinkViewModel::toggleDock() {
 // AppGuideViewModel
 // ===========================================================================
 
-AppGuideViewModel::AppGuideViewModel(HWND owner) : owner_(owner) {}
+AppGuideViewModel::AppGuideViewModel(NativeWindowHandle owner) : owner_(owner) {}
 
 void AppGuideViewModel::notifyUser(const std::wstring& message, bool ok) {
     if (ok) {

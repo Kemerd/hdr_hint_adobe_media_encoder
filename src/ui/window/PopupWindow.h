@@ -56,6 +56,7 @@ public:
     [[nodiscard]] HWND hwnd() const override { return hwnd_; }
     [[nodiscard]] DipScale dipScale() const override { return scale_; }
     [[nodiscard]] Size clientSizeDips() const override;
+    [[nodiscard]] Size workAreaSizeDips() const override;
     [[nodiscard]] POINT rootToScreenPx(Point rootPt) const override;
     [[nodiscard]] Point screenPxToRoot(POINT pt) const override;
     [[nodiscard]] bool isActiveWindow() const override { return true; }

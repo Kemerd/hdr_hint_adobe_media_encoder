@@ -266,14 +266,37 @@
         });
     }
 
-    // Launch fallback: File.execute() is a ShellExecute from AME's own process,
-    // outside CEF's process tree (and any job object CEF may have put the
-    // panel's Node in). Path may use forward or back slashes.
+    // macOS: Launch Services cannot pass the app an argument, so leave the
+    // "launch-request" marker it consumes to know Media Encoder started it.
+    function markLaunchRequest() {
+        var file = null;
+        try {
+            var base = Folder.userData ? String(Folder.userData.fsName) : "";
+            if (!base) { return; }
+            var folder = new Folder(base + "/HdrHint");
+            if (!folder.exists) { folder.create(); }
+            file = new File(folder.fsName + "/launch-request");
+            file.encoding = "UTF-8";
+            if (file.open("w")) {
+                file.write(String(new Date().getTime()));
+                file.close();
+            }
+        } catch (eMark) {
+            try { if (file) { file.close(); } } catch (eClose) {}
+        }
+    }
+
+    // Launch fallback: File.execute() is a ShellExecute from AME's own process
+    // (Launch Services on macOS), outside CEF's process tree (and any job
+    // object CEF may have put the panel's Node in). Path may use forward or
+    // back slashes; on macOS it is usually an .app bundle (a folder).
     function launch(path) {
         try {
             if (!path) { return false; }
+            var isMac = String(Folder.fs) === "Macintosh";
             var f = new File(String(path));
-            if (!f.exists) { return false; }
+            if (!f.exists && !(isMac && new Folder(String(path)).exists)) { return false; }
+            if (isMac) { markLaunchRequest(); }
             return f.execute();
         } catch (eLaunch) {
             return false;

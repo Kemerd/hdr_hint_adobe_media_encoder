@@ -116,7 +116,11 @@ The light-level and mastering values are conventional declared values, not measu
 | No HDR badge on YouTube | `mkvmerge -J file.mkv`: the video track must show `color_transfer_characteristics: 16` (PQ) or `18` (HLG) and there must be an `attachments` entry. If both are there, wait for processing. |
 | Nothing happens after an export | Look at the status dot: is the AME log found? Premiere direct exports never write the log, and network exports may not either; add the export folder under Settings > Watch folders. |
 
+**On macOS** the same fixes apply with Mac locations: mkvmerge is found in `/Applications/MKVToolNix-<version>.app/Contents/MacOS/` or Homebrew's `/opt/homebrew/bin` (`brew install mkvtoolnix`); check the panel flag with `defaults read com.adobe.CSXS.12 PlayerDebugMode` (it should print `1`); HDR Hint's log is `~/Library/Logs/HdrHint/hdrhint.log` and CEP's own logs are in `~/Library/Logs/CSXS/`. The panel and the startup script are installed with `scripts/install_panel.sh` and `scripts/install_startup.sh`.
+
 ## 6. Docking inside Media Encoder
+
+> **macOS:** docking relies on Windows window ownership, which macOS does not offer between apps. On a Mac HDR Hint stays a floating window (Window > Float on Top keeps it above AME) with a menu bar item, and everything else in this guide applies unchanged. Media Encoder still starts it through the startup script, and it still leaves when AME quits.
 
 Media Encoder starts HDR Hint itself, and docking needs no click. Nothing runs when Media Encoder is closed.
 

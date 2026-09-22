@@ -5,6 +5,7 @@
 
 #include "core/Logger.h"
 #include "core/PathUtil.h"
+#include "platform/Terms.h"
 #include "platform/Utf.h"
 #include "ui/app/AppViewModels.h"
 #include "ui/app/GuideResource.h"
@@ -24,11 +25,27 @@ constexpr const wchar_t* kLog = L"MockVM";
 /// Separator used between subtitle / summary parts everywhere in the UI.
 constexpr const wchar_t* kDot = L" · ";
 
-/// Where the sample exports live and where mkvmerge is "installed".
+/// Where the sample exports live and where mkvmerge is "installed" - spelled
+/// the way each platform's screenshots should show them.
+#if defined(_WIN32)
 constexpr const wchar_t* kExportFolder = L"D:\\Exports\\YouTube";
 constexpr const wchar_t* kMkvmergePath = L"C:\\Program Files\\MKVToolNix\\mkvmerge.exe";
 constexpr const wchar_t* kMkvmergeFolder = L"C:\\Program Files\\MKVToolNix";
 constexpr const wchar_t* kLutFolder = L"C:\\Program Files\\HDR Hint\\luts";
+constexpr const wchar_t* kUserLutFolder = L"D:\\LUTs";
+constexpr const wchar_t* kClientFolder = L"D:\\Exports\\Client Deliveries";
+constexpr const wchar_t* kShortsFolder = L"D:\\Exports\\Shorts";
+constexpr const wchar_t* kAmeLogPath = L"C:\\Users\\Editor\\Documents\\Adobe\\Adobe Media Encoder\\26.0\\AMEEncodingLog.txt";
+#else
+constexpr const wchar_t* kExportFolder = L"/Volumes/Media/Exports/YouTube";
+constexpr const wchar_t* kMkvmergePath = L"/Applications/MKVToolNix-90.0.app/Contents/MacOS/mkvmerge";
+constexpr const wchar_t* kMkvmergeFolder = L"/Applications/MKVToolNix-90.0.app/Contents/MacOS";
+constexpr const wchar_t* kLutFolder = L"/Applications/HdrHint.app/Contents/Resources/luts";
+constexpr const wchar_t* kUserLutFolder = L"/Volumes/Media/LUTs";
+constexpr const wchar_t* kClientFolder = L"/Volumes/Media/Exports/Client Deliveries";
+constexpr const wchar_t* kShortsFolder = L"/Volumes/Media/Exports/Shorts";
+constexpr const wchar_t* kAmeLogPath = L"/Users/editor/Documents/Adobe/Adobe Media Encoder/26.0/AMEEncodingLog.txt";
+#endif
 constexpr const wchar_t* kPqLutName = L"PQ1000_to_Rec709_SDR_g24_YouTubeHint.cube";
 constexpr const wchar_t* kHlgLutName = L"HLG_to_Rec709_SDR_YouTubeHint.cube";
 constexpr const wchar_t* kSuffix = L"_REC709_HINT";
@@ -64,7 +81,7 @@ std::vector<std::wstring> mockLutPaths() {
         path::join(kLutFolder, kPqLutName),
         path::join(kLutFolder, kHlgLutName),
         path::join(kLutFolder, L"pocket3_dlogm_to_rec709.cube"),
-        L"D:\\LUTs\\Client_Grade_v3.cube",
+        path::join(kUserLutFolder, L"Client_Grade_v3.cube"),
     };
 }
 
@@ -91,6 +108,8 @@ std::vector<Choice> mockLutChoices() {
     for (const std::wstring& lut : mockLutPaths()) {
         out.push_back(Choice{path::fileName(lut), lut, path::parent(lut)});
     }
+    // Last entry: reach any .cube on disk, not just the folder and recents.
+    out.push_back(Choice{L"Choose a .cube file...", kBrowseLutValue, std::wstring()});
     return out;
 }
 
@@ -535,6 +554,11 @@ void MockQueueViewModel::setLut(JobId id, const std::wstring& lutPath) {
     notify();
 }
 
+/// The mock has no shell dialogs; pretend the user picked a file off D:.
+void MockQueueViewModel::browseLut(JobId id) {
+    setLut(id, path::join(kUserLutFolder, L"Picked_From_Disk.cube"));
+}
+
 void MockQueueViewModel::setAttachLut(JobId id, bool attach) {
     JobView* row = find(id, L"setAttachLut");
     if (!row) {
@@ -624,7 +648,7 @@ SettingsView MockSettingsViewModel::sampleView() {
     v.suffix = kSuffix;
     v.attachLutByDefault = true;
     // Watch folders.
-    v.watchFolders = {kExportFolder, L"D:\\Exports\\Client Deliveries"};
+    v.watchFolders = {kExportFolder, kClientFolder};
     // Behaviour.
     v.autoProcess = true;
     v.autoProcessAme = true;
@@ -651,7 +675,7 @@ void MockSettingsViewModel::refreshStatus() {
     // An explicit path that is not mkvmerge.exe reads as "not found"; anything
     // else is the shipped v82.0.
     const std::wstring name = path::fileName(view_.mkvmergePath);
-    if (!view_.mkvmergePath.empty() && !platform::iequals(name, L"mkvmerge.exe")) {
+    if (!view_.mkvmergePath.empty() && !platform::iequals(name, platform::terms::kMkvmergeExe)) {
         view_.mkvmergeOk = false;
         view_.mkvmergeStatus = L"not found - install MKVToolNix";
         view_.aboutLine = L"HDR Hint 1.0.0 · mkvmerge not found";
@@ -701,7 +725,12 @@ void MockSettingsViewModel::setLutFolder(const std::wstring& path) {
 }
 
 void MockSettingsViewModel::browseLutFolder() {
-    setLutFolder(L"D:\\LUTs");
+    setLutFolder(kUserLutFolder);
+}
+
+/// The mock has no shell dialogs; pretend the user picked a file off D:.
+void MockSettingsViewModel::browseLut(TransferKind t) {
+    setDefaultLut(t, path::join(kUserLutFolder, L"Picked_From_Disk.cube"));
 }
 
 void MockSettingsViewModel::setDefaultLut(TransferKind t, const std::wstring& path) {
@@ -756,7 +785,7 @@ void MockSettingsViewModel::setAttachLutByDefault(bool on) {
 void MockSettingsViewModel::addWatchFolder() {
     // Each "pick" yields a fresh folder so repeated clicks are visible.
     ++addedFolders_;
-    std::wstring folder = L"D:\\Exports\\Shorts";
+    std::wstring folder = kShortsFolder;
     if (addedFolders_ > 1) {
         folder += std::format(L" {}", addedFolders_);
     }
@@ -873,6 +902,10 @@ MockLinkViewModel::MockLinkViewModel() {
     v.logFound = true;
     v.queueRunning = false;
     v.docked = false;
+#if !defined(_WIN32)
+    // Docking is a Windows feature; the Mac screenshots show no dock toggle.
+    v.dockingSupported = false;
+#endif
     setLink(std::move(v));
 }
 
@@ -888,8 +921,7 @@ void MockLinkViewModel::setLink(LinkView link) {
     if (link_.tooltip.empty()) {
         std::vector<std::wstring> lines;
         lines.push_back(link_.panelLinked ? L"Media Encoder panel connected" : L"Media Encoder panel not connected");
-        lines.push_back(link_.logFound ? L"AME log: C:\\Users\\Editor\\Documents\\Adobe\\Adobe Media Encoder\\26.0\\AMEEncodingLog.txt"
-                                       : L"AME log not found");
+        lines.push_back(link_.logFound ? std::wstring(L"AME log: ") + kAmeLogPath : std::wstring(L"AME log not found"));
         lines.push_back(link_.queueRunning ? L"Queue running" : L"Queue idle");
         lines.push_back(L"mkvmerge v82.0");
         if (link_.docked) {

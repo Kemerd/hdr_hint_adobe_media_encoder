@@ -14,6 +14,7 @@
 namespace path = hh::path;
 namespace platform = hh::platform;
 
+#if defined(_WIN32)
 // ---- keys -------------------------------------------------------------------------
 
 HH_TEST(PathUtil_normalizeKeyUpperCasesAndCleans) {
@@ -84,16 +85,6 @@ HH_TEST(PathUtil_normalizeSeparators) {
     CHECK(path::normalizeSeparators(L"").empty());
 }
 
-HH_TEST(PathUtil_hasExtension) {
-    const std::vector<std::wstring> list = {L".mp4", L".mov", L".m4v"};
-    CHECK(path::hasExtension(L"C:\\x\\clip.mp4", list));
-    CHECK(path::hasExtension(L"clip.MP4", list));
-    CHECK(path::hasExtension(L"clip.Mov", list));
-    CHECK_FALSE(path::hasExtension(L"clip.mkv", list));
-    CHECK_FALSE(path::hasExtension(L"clip", list));
-    CHECK_FALSE(path::hasExtension(L"clip.mp4", {}));
-}
-
 // ---- hint / partial names -----------------------------------------------------------
 
 HH_TEST(PathUtil_hintPathFor) {
@@ -107,6 +98,104 @@ HH_TEST(PathUtil_hintPathFor) {
     // .mov sources become .mkv too; an empty suffix is just "<stem>.mkv".
     CHECK_WEQ(path::hintPathFor(L"C:\\out\\master.mov", L"_X", L""), L"C:\\out\\master_X.mkv");
     CHECK_WEQ(path::hintPathFor(L"C:\\out\\clip.mp4", L"", L""), L"C:\\out\\clip.mkv");
+}
+
+#else
+// ---- keys (POSIX) -------------------------------------------------------------
+
+HH_TEST(PathUtil_normalizeKeyUpperCasesAndCleans) {
+    // Upper-case, one '/' between components, "." / ".." resolved, no trailing '/'.
+    CHECK_WEQ(path::normalizeKey(L"/Volumes/Out/clip.mp4"), L"/VOLUMES/OUT/CLIP.MP4");
+    CHECK_WEQ(path::normalizeKey(L"//Volumes//Out///clip.mp4"), L"/VOLUMES/OUT/CLIP.MP4");
+    CHECK_WEQ(path::normalizeKey(L"/Volumes/Out/../clip.mp4"), L"/VOLUMES/CLIP.MP4");
+    CHECK_WEQ(path::normalizeKey(L"/Volumes/Out/./clip.mp4"), L"/VOLUMES/OUT/CLIP.MP4");
+    CHECK_WEQ(path::normalizeKey(L"/Volumes/Out/"), L"/VOLUMES/OUT");
+    // Same file, different spellings: one key (APFS is case-insensitive).
+    CHECK_WEQ(path::normalizeKey(L"/Volumes/YouTube Renders/clip.mp4"), path::normalizeKey(L"/volumes/youtube renders/CLIP.MP4"));
+    // Decomposed (file system) and composed (AME log) spellings meet.
+    CHECK_WEQ(path::normalizeKey(L"/tmp/E\u0301pisode.mp4"), path::normalizeKey(L"/tmp/\u00c9pisode.mp4"));
+    // Empty stays empty rather than turning into the current directory.
+    CHECK(path::normalizeKey(L"").empty());
+}
+
+HH_TEST(PathUtil_normalizeKeyResolvesRelativePaths) {
+    // A relative path is anchored on the current directory, then upper-cased.
+    const std::wstring key = path::normalizeKey(L"rel/clip.mp4");
+    const std::wstring expected = platform::toUpperInvariant(platform::fullPath(L"rel/clip.mp4"));
+    CHECK_WEQ(key, expected);
+    CHECK(key.size() > 3);
+    CHECK(!key.empty() && key.front() == L'/');
+}
+
+// ---- name parts (POSIX) ----------------------------------------------------------
+
+HH_TEST(PathUtil_fileNameStemExtension) {
+    CHECK_WEQ(path::fileName(L"/a/b/clip.mp4"), L"clip.mp4");
+    CHECK_WEQ(path::fileName(L"clip.mp4"), L"clip.mp4");
+    CHECK(path::fileName(L"").empty());
+    // A backslash is an ordinary file-name character on POSIX.
+    CHECK_WEQ(path::fileName(L"/a/odd\\name.mp4"), L"odd\\name.mp4");
+
+    CHECK_WEQ(path::stem(L"clip.mp4"), L"clip");
+    CHECK_WEQ(path::stem(L"clip.tar.gz"), L"clip.tar");
+    CHECK_WEQ(path::stem(L"/a/clip.mp4"), L"clip");
+    CHECK_WEQ(path::stem(L"noext"), L"noext");
+
+    CHECK_WEQ(path::extension(L"clip.mp4"), L".mp4");
+    CHECK_WEQ(path::extension(L"CLIP.MP4"), L".mp4");
+    CHECK_WEQ(path::extension(L"/a/clip.tar.gz"), L".gz");
+    CHECK(path::extension(L"noext").empty());
+    // A dot inside a folder name is not an extension of the file.
+    CHECK(path::extension(L"/dir.v2/noext").empty());
+}
+
+HH_TEST(PathUtil_parentAndJoin) {
+    CHECK_WEQ(path::parent(L"/a/b/clip.mp4"), L"/a/b");
+    CHECK_WEQ(path::parent(L"/clip.mp4"), L"/");
+    CHECK_WEQ(path::parent(L"/"), L"/");
+    CHECK(path::parent(L"clip.mp4").empty());
+
+    CHECK_WEQ(path::join(L"/a", L"b.mp4"), L"/a/b.mp4");
+    CHECK_WEQ(path::join(L"/a/", L"b.mp4"), L"/a/b.mp4");
+    CHECK_WEQ(path::join(L"/", L"b.mp4"), L"/b.mp4");
+    CHECK_WEQ(path::join(L"/a", L"/b.mp4"), L"/a/b.mp4");
+}
+
+HH_TEST(PathUtil_normalizeSeparators) {
+    CHECK_WEQ(path::normalizeSeparators(L"/a//b///c"), L"/a/b/c");
+    CHECK_WEQ(path::normalizeSeparators(L"/a/b"), L"/a/b");
+    // Backslashes are file-name characters, never separators.
+    CHECK_WEQ(path::normalizeSeparators(L"/a\\b"), L"/a\\b");
+    CHECK(path::normalizeSeparators(L"").empty());
+}
+
+// ---- hint / partial names (POSIX) -----------------------------------------------------
+
+HH_TEST(PathUtil_hintPathFor) {
+    // Next to the source by default.
+    CHECK_WEQ(path::hintPathFor(L"/out/clip.mp4", L"_REC709_HINT", L""), L"/out/clip_REC709_HINT.mkv");
+    // A stem that already carries the suffix is not doubled.
+    CHECK_WEQ(path::hintPathFor(L"/out/clip_REC709_HINT.mp4", L"_REC709_HINT", L""), L"/out/clip_REC709_HINT.mkv");
+    // Custom output folder (with and without a trailing separator).
+    CHECK_WEQ(path::hintPathFor(L"/out/clip.mp4", L"_X", L"/Volumes/hints"), L"/Volumes/hints/clip_X.mkv");
+    CHECK_WEQ(path::hintPathFor(L"/out/clip.mp4", L"_X", L"/Volumes/hints/"), L"/Volumes/hints/clip_X.mkv");
+    // .mov sources become .mkv too; an empty suffix is just "<stem>.mkv".
+    CHECK_WEQ(path::hintPathFor(L"/out/master.mov", L"_X", L""), L"/out/master_X.mkv");
+    CHECK_WEQ(path::hintPathFor(L"/out/clip.mp4", L"", L""), L"/out/clip.mkv");
+}
+
+#endif
+
+// ---- extension lists --------------------------------------------------------------
+
+HH_TEST(PathUtil_hasExtension) {
+    const std::vector<std::wstring> list = {L".mp4", L".mov", L".m4v"};
+    CHECK(path::hasExtension(L"C:\\x\\clip.mp4", list));
+    CHECK(path::hasExtension(L"clip.MP4", list));
+    CHECK(path::hasExtension(L"clip.Mov", list));
+    CHECK_FALSE(path::hasExtension(L"clip.mkv", list));
+    CHECK_FALSE(path::hasExtension(L"clip", list));
+    CHECK_FALSE(path::hasExtension(L"clip.mp4", {}));
 }
 
 HH_TEST(PathUtil_firstFreePath) {

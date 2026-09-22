@@ -9,12 +9,24 @@
 // Everything that touches the handle or the counters is mutex-guarded. The
 // logger is usable before open() and after close(); in that state the lines
 // go to the debugger (OutputDebugString) only.
+//
+// POSIX: an O_APPEND descriptor gives the same no-interleave guarantee, the
+// "debugger" sink is stderr when it is a terminal (a Finder-launched app has
+// none), and lines end in LF instead of CRLF.
 // ---------------------------------------------------------------------------
 #include "core/Logger.h"
 
 #include "platform/FileIo.h"
 #include "platform/Time.h"
 #include "platform/Utf.h"
+
+#if !defined(_WIN32)
+#include <cerrno>
+#include <fcntl.h>
+#include <pthread.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <algorithm>
 #include <string>
@@ -54,6 +66,73 @@ std::wstring stripTrailingSeparators(std::wstring s) {
     return s;
 }
 
+#if defined(_WIN32)
+/// The open log file (a handle opened for FILE_APPEND_DATA).
+using LogFile = HANDLE;
+/// "No file" sentinel.
+const LogFile kNoFile = nullptr;
+/// Line terminator written after every entry.
+constexpr const wchar_t* kNewline = L"\r\n";
+
+/// Closes the log handle.
+void closeLogFile(LogFile f) { ::CloseHandle(f); }
+/// Pushes buffered data to the disk.
+void flushLogFile(LogFile f) { ::FlushFileBuffers(f); }
+/// Appends bytes; false on failure. @p written receives the byte count.
+bool writeLogFile(LogFile f, const std::string& utf8, uint64_t& written) {
+    DWORD done = 0;
+    const DWORD toWrite = static_cast<DWORD>(std::min<size_t>(utf8.size(), 0x7FFFFFFFu));
+    if (!::WriteFile(f, utf8.data(), toWrite, &done, nullptr)) {
+        return false;
+    }
+    written = done;
+    return true;
+}
+/// The debugger sink.
+void debugOutput(const wchar_t* text) { ::OutputDebugStringW(text); }
+/// The calling thread's id for the [T....] column.
+uint64_t currentThreadId() { return static_cast<uint64_t>(::GetCurrentThreadId()); }
+#else
+using LogFile = int;
+constexpr LogFile kNoFile = -1;
+constexpr const wchar_t* kNewline = L"\n";
+
+void closeLogFile(LogFile f) { ::close(f); }
+void flushLogFile(LogFile f) { ::fsync(f); }
+bool writeLogFile(LogFile f, const std::string& utf8, uint64_t& written) {
+    size_t done = 0;
+    while (done < utf8.size()) {
+        const ssize_t n = ::write(f, utf8.data() + done, utf8.size() - done);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            written = done;
+            return false;
+        }
+        done += static_cast<size_t>(n);
+    }
+    written = done;
+    return true;
+}
+/// stderr is only worth writing to when a person is watching it.
+void debugOutput(const wchar_t* text) {
+    static const bool s_tty = ::isatty(STDERR_FILENO) != 0;
+    if (!s_tty || text == nullptr) {
+        return;
+    }
+    const std::string utf8 = platform::toUtf8(text);
+    ssize_t ignored = ::write(STDERR_FILENO, utf8.data(), utf8.size());
+    static_cast<void>(ignored);
+}
+uint64_t currentThreadId() {
+    uint64_t tid = 0;
+    ::pthread_threadid_np(nullptr, &tid);
+    return tid;
+}
+#endif
+
+#if defined(_WIN32)
 /**
  * @brief Opens the log for appending. Readers (log viewers) and the rotation
  *        rename are allowed through the share mode.
@@ -88,6 +167,34 @@ uint64_t sizeOfHandle(HANDLE h) {
     }
     return static_cast<uint64_t>(li.QuadPart);
 }
+#else
+/**
+ * @brief O_APPEND descriptor: every write lands at the end atomically.
+ * @return -1 on failure (errno is left intact).
+ */
+LogFile openAppend(const std::wstring& path) {
+    if (path.empty()) {
+        return kNoFile;
+    }
+    const std::string native = platform::toUtf8(path);
+    int fd = -1;
+    do {
+        fd = ::open(native.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    } while (fd < 0 && errno == EINTR);
+    return fd;
+}
+
+/**
+ * @brief Size of an open file, 0 when it cannot be determined.
+ */
+uint64_t sizeOfHandle(LogFile f) {
+    struct stat st {};
+    if (f < 0 || ::fstat(f, &st) != 0 || st.st_size < 0) {
+        return 0;
+    }
+    return static_cast<uint64_t>(st.st_size);
+}
+#endif
 
 } // namespace
 
@@ -118,10 +225,10 @@ Result<void> Logger::open(const std::wstring& directory, LogLevel level, uint32_
     std::lock_guard<std::mutex> lock(mutex_);
 
     // A second open() (e.g. after the log settings changed) closes the old handle first.
-    if (file_ != nullptr) {
+    if (file_ != kNoFile) {
         flushLocked();
-        ::CloseHandle(file_);
-        file_ = nullptr;
+        closeLogFile(file_);
+        file_ = kNoFile;
     }
 
     // Make sure the folder exists before touching any file inside it.
@@ -148,7 +255,7 @@ Result<void> Logger::open(const std::wstring& directory, LogLevel level, uint32_
     }
 
     // rotateLocked() reports problems to the debugger only; surface them here.
-    if (file_ == nullptr) {
+    if (file_ == kNoFile) {
         Error err = Error::fromLastError(L"Logger: CreateFileW(" + path_ + L")");
         directory_.clear();
         path_.clear();
@@ -164,10 +271,10 @@ Result<void> Logger::open(const std::wstring& directory, LogLevel level, uint32_
  */
 void Logger::close() {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (file_ != nullptr) {
+    if (file_ != kNoFile) {
         flushLocked();
-        ::CloseHandle(file_);
-        file_ = nullptr;
+        closeLogFile(file_);
+        file_ = kNoFile;
     }
     directory_.clear();
     path_.clear();
@@ -215,12 +322,12 @@ void Logger::write(LogLevel level, std::wstring_view component, std::wstring_vie
     line += L" [";
     line += levelTag(level);
     line += L"] [T";
-    line += std::to_wstring(::GetCurrentThreadId());
+    line += std::to_wstring(currentThreadId());
     line += L"] [";
     line.append(component.empty() ? std::wstring_view(L"App") : component);
     line += L"] ";
     line.append(message);
-    line += L"\r\n";
+    line += kNewline;
 
     const bool important = static_cast<int>(level) >= static_cast<int>(LogLevel::Warn);
     const std::string utf8 = platform::toUtf8(line);
@@ -228,21 +335,20 @@ void Logger::write(LogLevel level, std::wstring_view component, std::wstring_vie
     std::lock_guard<std::mutex> lock(mutex_);
 
     // Not open (yet / any more): the debugger is the only sink we have.
-    if (file_ == nullptr) {
-        ::OutputDebugStringW(line.c_str());
+    if (file_ == kNoFile) {
+        debugOutput(line.c_str());
         return;
     }
 
     // Warnings and errors are mirrored to the debugger so they show up live.
     if (important) {
-        ::OutputDebugStringW(line.c_str());
+        debugOutput(line.c_str());
     }
 
     // Append the UTF-8 bytes. A failure has nowhere to go but the debugger.
-    DWORD written = 0;
-    const DWORD toWrite = static_cast<DWORD>(std::min<size_t>(utf8.size(), 0x7FFFFFFFu));
-    if (!::WriteFile(file_, utf8.data(), toWrite, &written, nullptr)) {
-        ::OutputDebugStringW(L"[Logger] WriteFile failed for the log file\r\n");
+    uint64_t written = 0;
+    if (!writeLogFile(file_, utf8, written)) {
+        debugOutput(L"[Logger] WriteFile failed for the log file\r\n");
         return;
     }
     bytesWritten_ += written;
@@ -325,10 +431,10 @@ void Logger::rotateLocked() {
     }
 
     // Close the live handle so the rename can proceed.
-    if (file_ != nullptr) {
+    if (file_ != kNoFile) {
         flushLocked();
-        ::CloseHandle(file_);
-        file_ = nullptr;
+        closeLogFile(file_);
+        file_ = kNoFile;
     }
 
     bool renamed = false;
@@ -343,7 +449,7 @@ void Logger::rotateLocked() {
             const std::wstring to = rotatedName(directory_, i);
             if (platform::exists(from)) {
                 if (auto mv = platform::moveReplace(from, to); !mv) {
-                    ::OutputDebugStringW((L"[Logger] rotate: " + mv.error().toString() + L"\r\n").c_str());
+                    debugOutput((L"[Logger] rotate: " + mv.error().toString() + L"\r\n").c_str());
                 }
             }
         }
@@ -351,14 +457,14 @@ void Logger::rotateLocked() {
         if (auto mv = platform::moveReplace(path_, rotatedName(directory_, 1)); mv) {
             renamed = true;
         } else {
-            ::OutputDebugStringW((L"[Logger] rotate: " + mv.error().toString() + L"\r\n").c_str());
+            debugOutput((L"[Logger] rotate: " + mv.error().toString() + L"\r\n").c_str());
         }
     }
 
     // Re-open (a brand-new file when the rename worked, the old one otherwise).
     file_ = openAppend(path_);
-    if (file_ == nullptr) {
-        ::OutputDebugStringW(L"[Logger] rotate: could not re-open the log file\r\n");
+    if (file_ == kNoFile) {
+        debugOutput(L"[Logger] rotate: could not re-open the log file\r\n");
         bytesWritten_ = 0;
         return;
     }
@@ -374,8 +480,8 @@ void Logger::rotateLocked() {
  * @brief FlushFileBuffers on the live handle and remembers when.
  */
 void Logger::flushLocked() {
-    if (file_ != nullptr) {
-        ::FlushFileBuffers(file_);
+    if (file_ != kNoFile) {
+        flushLogFile(file_);
     }
     lastFlushMs_ = platform::nowMonotonicMs();
 }

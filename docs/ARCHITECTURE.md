@@ -218,3 +218,41 @@ Run each check on AME 26.2.2 and record the outcome here before trusting the ass
 | 18 | Elevation mismatch (AME elevated, HdrHint not): message shown instead of a silent dock failure | message | | |
 | 19 | End-to-end: 20 s PQ export with "HEVC 4k 59.94 HDR" (HDR10 metadata OFF) → `<name>_REC709_HINT.mkv` within about 10 s; `mkvmerge -J` shows transfer 16 / primaries 9 / CLL / one `application/x-cube` attachment | pass | | |
 | 20 | Docked window follows drag, resize, workspace switch, monitor change; hides on minimise / dialog / background tab; floats on panel close; re-docks on reopen | pass | partial | Follows `MoveWindow` of the frame and stays visible during the drag; clicks work while docked (real-input test on the Settings tab). Workspace switch and monitor change not yet exercised live. |
+
+## 10. Two platforms, one codebase
+
+Everything above the OS line is shared: the engine, the job model, the parsers, the IPC
+protocol, the UI toolkit (widgets, layout, springs, themes), the screens and the view-models.
+Below it each platform has its own layer behind the same headers.
+
+| Concern | Header | Windows | macOS |
+|---|---|---|---|
+| Type vocabulary | `platform/Win.h` | `<windows.h>` | `DWORD`, `RECT`, the `ERROR_*` numbers and friends, defined over POSIX; errno maps onto the Win32 codes |
+| Events / waiting | `platform/Event.h` | `CreateEvent`, `WaitForMultipleObjects` | a self-pipe per event, `poll()` |
+| Files, locks | `platform/FileIo.h` | `CreateFileW`, `\?\` long paths, deny-write probe | `open`/`F_FULLFSYNC`, `renamex_np`, libproc's open-for-write scan as the deny-write probe |
+| Folder watching | `platform/DirectoryWatch.h` | `ReadDirectoryChangesW` | FSEvents, reconciled against a snapshot into the same `FILE_ACTION_*` records |
+| Processes | `platform/Process.h` | `CreateProcessW`, job objects, Toolhelp | `posix_spawn`, kqueue exit watch, libproc |
+| Panel ↔ app channel | `platform/NamedPipe.h` | `\.\pipe\HdrHint` | Unix socket in Application Support (mode 0600) |
+| Single instance | `platform/SingleInstance.h` | named mutex + `WM_COPYDATA` | `flock` + a socket that forwards argv |
+| Trash / reveal | `platform/RecycleBin.h` | `IFileOperation`, `SHOpenFolderAndSelectItems` | `NSFileManager trashItemAtURL`, `NSWorkspace` |
+| Known folders | `platform/KnownFolders.h` | `%APPDATA%`, `%LOCALAPPDATA%`, exe folder | Application Support, `~/Library/Logs`, the bundle's Resources |
+| OS nouns in text | `platform/Terms.h` | Recycle Bin, Explorer, tray | Trash, Finder, menu bar |
+| Drawing | `ui/gfx/Canvas.h`, `TextCache.h` | Direct2D, DirectWrite | Core Graphics, Core Text (`ui/mac/CanvasMac.mm`, `TextCacheMac.mm`) |
+| Windows | `ui/core/WindowServices.h` | `WindowHost`, `PopupWindow` (HWND, DComp swap chains) | `MacWindowHost`, `MacPopupWindow` (NSWindow / NSPanel + a flipped layer-backed view) |
+| Tray | — | `TrayIcon` (Shell_NotifyIcon, balloons) | `MacStatusItem` (NSStatusItem, Notification Center) |
+| AME docking | `ame/DockControl.h` | `DockController` (window ownership, WinEvent hooks) | `MacDockControl`: `supported() == false`, the dock toggles hide |
+| Entry point | — | `src/main.cpp` (`wWinMain`) | `src/app/mac/main.mm` (`NSApplication`, menu bar agent) |
+
+Conventions that keep it that way:
+
+- Windows-only units in shared folders end in `Win.cpp`; macOS units live in `mac/` folders or
+  `platform/posix/`. CMake picks by path, so adding a file never needs a CMake edit.
+- Widgets speak Win32 virtual keys and `WHEEL_DELTA` units everywhere. The Cocoa view
+  translates at the boundary: Command is `Modifiers::ctrl`, Option+arrows are the word
+  moves, Command+arrows are Home/End, touchpad deltas are scaled so one point of finger travel
+  is one dip, and the momentum phase is dropped because `ScrollView` runs its own inertia.
+- Frames are demand-driven on both: the Win32 loop blocks on messages or the swap chain's
+  latency waitable; the Cocoa host re-arms one common-modes run-loop timer for "now", "next
+  60 Hz tick" or "next timeline deadline", and does nothing while the UI is idle.
+- `--screenshot` renders offscreen (a CGBitmapContext on macOS), so CI captures every tab on a
+  headless runner and uploads the PNGs as an artifact.

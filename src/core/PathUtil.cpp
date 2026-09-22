@@ -1,8 +1,12 @@
 // ---------------------------------------------------------------------------
 // PathUtil.cpp - path rules specific to HdrHint (keys, suffixes, AME temp names).
 //
-// Pure string work on Win32 paths; the only file-system calls are in
-// normalizeKey (GetFullPathName) and firstFreePath (existence probes).
+// Pure string work; the only file-system calls are in normalizeKey
+// (GetFullPathName / its POSIX twin) and firstFreePath (existence probes).
+//
+// Windows paths accept both separators and know drive letters and UNC
+// roots. POSIX paths have exactly one separator ('/') and one root ("/");
+// a backslash there is an ordinary file-name character.
 // ---------------------------------------------------------------------------
 #include "core/PathUtil.h"
 
@@ -17,11 +21,16 @@ namespace hh::path {
 
 namespace {
 
-/// Both separators count everywhere in this file.
+/// Windows: both separators count everywhere in this file. POSIX: only '/'.
 bool isSep(wchar_t c) noexcept {
+#if defined(_WIN32)
     return c == L'\\' || c == L'/';
+#else
+    return c == L'/';
+#endif
 }
 
+#if defined(_WIN32)
 /**
  * @brief Length of a UNC root ("\\server\share\") starting the scan at @p start
  *        (just past the leading "\\" or "\\?\UNC\"). The trailing separator
@@ -47,6 +56,7 @@ size_t uncRootLength(std::wstring_view p, size_t start) noexcept {
     }
     return i;
 }
+#endif
 
 /**
  * @brief Length of the root part of a path including its trailing separator:
@@ -55,6 +65,10 @@ size_t uncRootLength(std::wstring_view p, size_t start) noexcept {
  */
 size_t rootLength(std::wstring_view p) noexcept {
     const size_t n = p.size();
+#if !defined(_WIN32)
+    // POSIX has a single root.
+    return (n >= 1 && p[0] == L'/') ? 1 : 0;
+#else
 
     // UNC / device prefixes.
     if (n >= 2 && isSep(p[0]) && isSep(p[1])) {
@@ -85,6 +99,7 @@ size_t rootLength(std::wstring_view p) noexcept {
         return 1;
     }
     return 0;
+#endif
 }
 
 /// Index of the last '.' that starts an extension in a *file name*, or npos.
@@ -142,6 +157,7 @@ std::wstring normalizeKey(std::wstring_view path) {
         full = normalizeSeparators(t);
     }
 
+#if defined(_WIN32)
     // Drop any extended-length prefix so keys compare regardless of how the
     // path was handed to us.
     if (platform::istartsWith(full, L"\\\\?\\UNC\\")) {
@@ -149,6 +165,10 @@ std::wstring normalizeKey(std::wstring_view path) {
     } else if (platform::istartsWith(full, L"\\\\?\\")) {
         full = full.substr(4);
     }
+#else
+    // The file system may hand back decomposed names; AME's log uses composed ones.
+    full = platform::normalizeNfc(full);
+#endif
 
     // Trailing separators beyond the root are noise.
     const size_t root = rootLength(full);
@@ -163,7 +183,11 @@ std::wstring normalizeKey(std::wstring_view path) {
  * @brief Last path component.
  */
 std::wstring fileName(std::wstring_view path) {
+#if defined(_WIN32)
     const size_t pos = path.find_last_of(L"\\/");
+#else
+    const size_t pos = path.find_last_of(L'/');
+#endif
     if (pos == std::wstring_view::npos) {
         return std::wstring(path);
     }
@@ -254,7 +278,7 @@ std::wstring join(std::wstring_view dir, std::wstring_view name) {
         out.pop_back();
     }
     if (out.empty() || !isSep(out.back())) {
-        out += L'\\';
+        out += kSeparator;
     }
     out.append(name);
     return out;
@@ -267,7 +291,16 @@ std::wstring join(std::wstring_view dir, std::wstring_view name) {
 std::wstring normalizeSeparators(std::wstring_view path) {
     std::wstring out;
     out.reserve(path.size());
-
+#if !defined(_WIN32)
+    // POSIX: collapse runs of '/' and leave every other character alone.
+    for (const wchar_t c : path) {
+        if (c == L'/' && !out.empty() && out.back() == L'/') {
+            continue;
+        }
+        out += c;
+    }
+    return out;
+#else
     size_t i = 0;
     if (path.size() >= 2 && isSep(path[0]) && isSep(path[1])) {
         out += L"\\\\";
@@ -284,6 +317,7 @@ std::wstring normalizeSeparators(std::wstring_view path) {
         }
     }
     return out;
+#endif
 }
 
 /**

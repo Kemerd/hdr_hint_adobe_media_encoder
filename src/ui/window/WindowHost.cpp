@@ -1418,6 +1418,24 @@ Size WindowHost::clientSizeDips() const {
 }
 
 /**
+ * @brief Work area of the monitor nearest to the window, in this window's dips.
+ */
+Size WindowHost::workAreaSizeDips() const {
+    if (hwnd_ == nullptr) {
+        return {0.0f, 0.0f};
+    }
+    const HMONITOR mon = ::MonitorFromWindow(hwnd_, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi{};
+    mi.cbSize = sizeof(mi);
+    if (!mon || !::GetMonitorInfoW(mon, &mi)) {
+        return {0.0f, 0.0f};
+    }
+    return {scale_.toDip(static_cast<float>(mi.rcWork.right - mi.rcWork.left)),
+            scale_.toDip(static_cast<float>(mi.rcWork.bottom - mi.rcWork.top))};
+}
+
+
+/**
  * @brief Root dips -> screen pixels.
  */
 POINT WindowHost::rootToScreenPx(Point rootPt) const {

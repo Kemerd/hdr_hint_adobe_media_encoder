@@ -1,5 +1,9 @@
 // ---------------------------------------------------------------------------
 // AmeProcess.h - finding Adobe Media Encoder's process and main window.
+//
+// isAmeRunning() is portable (AmeProcess.cpp on Windows, mac/AmeProcessMac.cpp
+// on macOS); the window lookups feed the HWND-level docking and exist on
+// Windows only.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -11,6 +15,10 @@
 
 namespace hh::ame {
 
+/// True when the process is alive.
+bool isAmeRunning();
+
+#if defined(_WIN32)
 struct AmeWindow {
     HWND hwnd = nullptr;
     DWORD pid = 0;
@@ -22,9 +30,8 @@ struct AmeWindow {
 std::optional<AmeWindow> findAmeMainWindow();
 /// All top-level windows of AME's process (main frame + floating panel frames).
 std::vector<HWND> ameTopLevelWindows(DWORD pid);
-/// True when the process is alive.
-bool isAmeRunning();
 /// The "DroverLord - Window Class" name AME uses for panel frames.
 const wchar_t* droverLordClassName() noexcept;
+#endif
 
 } // namespace hh::ame

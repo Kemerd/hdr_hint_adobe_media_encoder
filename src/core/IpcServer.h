@@ -4,7 +4,7 @@
 #pragma once
 
 #include "core/EngineEvents.h"
-#include "platform/Handle.h"
+#include "platform/Event.h"
 #include "platform/NamedPipe.h"
 #include "platform/Win.h"
 
@@ -58,8 +58,8 @@ private:
     std::thread thread_;
     std::atomic<bool> running_{false};
     std::atomic<int> connected_{0};
-    platform::UniqueHandle stopEvent_;
-    platform::UniqueHandle wakeEvent_;
+    platform::Event stopEvent_;
+    platform::Event wakeEvent_;
     std::mutex mutex_;
     std::vector<std::pair<uint32_t, std::string>> pendingSends_;   ///< (0 = broadcast)
     std::vector<std::unique_ptr<Client>> clients_;

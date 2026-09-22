@@ -3,8 +3,8 @@
 //
 // Icons are described in a unit square (0..1) and mapped into the glyph box
 // so a single definition scales to any size. Polylines go through one path
-// geometry per call so joins are round and continuous; a handful of lines
-// per icon per frame is nothing for Direct2D.
+// per call (Canvas::strokePolyline) so joins are round and continuous; a
+// handful of lines per icon per frame is nothing for either backend.
 // ---------------------------------------------------------------------------
 #include "ui/gfx/PathIconsInternal.h"
 
@@ -39,137 +39,26 @@ struct Glyph {
 };
 
 /**
- * @brief Round cap/join stroke style, cached per Direct2D factory.
- *
- * Stroke styles are factory resources (device-independent), so one instance
- * serves every frame until the factory itself is replaced.
- */
-ID2D1StrokeStyle* roundStrokeStyle(Canvas& c) {
-    static ComPtr<ID2D1StrokeStyle> cached;
-    static ID2D1Factory* cachedFactory = nullptr;
-    if (c.ctx() == nullptr) {
-        return nullptr;
-    }
-    ComPtr<ID2D1Factory> factory;
-    c.ctx()->GetFactory(factory.GetAddressOf());
-    if (!factory) {
-        return nullptr;
-    }
-    // Rebuild when the factory changed (device recreation with a new factory).
-    if (!cached || cachedFactory != factory.Get()) {
-        cached.Reset();
-        const D2D1_STROKE_STYLE_PROPERTIES props = D2D1::StrokeStyleProperties(
-            D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_CAP_STYLE_ROUND, D2D1_LINE_JOIN_ROUND, 10.0f, D2D1_DASH_STYLE_SOLID, 0.0f);
-        if (FAILED(factory->CreateStrokeStyle(&props, nullptr, 0, cached.GetAddressOf()))) {
-            cached.Reset();
-            cachedFactory = nullptr;
-            return nullptr;
-        }
-        cachedFactory = factory.Get();
-    }
-    return cached.Get();
-}
-
-/**
- * @brief Builds a path geometry from points (optionally closed / filled).
- */
-ComPtr<ID2D1PathGeometry> buildPath(Canvas& c, const std::vector<Point>& pts, bool closed, bool filled) {
-    if (c.ctx() == nullptr || pts.size() < 2) {
-        return nullptr;
-    }
-    ComPtr<ID2D1Factory> factory;
-    c.ctx()->GetFactory(factory.GetAddressOf());
-    if (!factory) {
-        return nullptr;
-    }
-    ComPtr<ID2D1PathGeometry> geometry;
-    if (FAILED(factory->CreatePathGeometry(geometry.GetAddressOf())) || !geometry) {
-        return nullptr;
-    }
-    ComPtr<ID2D1GeometrySink> sink;
-    if (FAILED(geometry->Open(sink.GetAddressOf())) || !sink) {
-        return nullptr;
-    }
-    // One figure through every point; filled figures are always closed.
-    sink->BeginFigure(pts[0].toD2D(), filled ? D2D1_FIGURE_BEGIN_FILLED : D2D1_FIGURE_BEGIN_HOLLOW);
-    for (size_t i = 1; i < pts.size(); ++i) {
-        sink->AddLine(pts[i].toD2D());
-    }
-    sink->EndFigure((closed || filled) ? D2D1_FIGURE_END_CLOSED : D2D1_FIGURE_END_OPEN);
-    if (FAILED(sink->Close())) {
-        return nullptr;
-    }
-    return geometry;
-}
-
-/**
  * @brief Strokes a polyline with round caps/joins.
  */
 void polyline(const Glyph& g, std::initializer_list<Point> pts, bool closed = false) {
-    std::vector<Point> v(pts);
-    if (v.size() == 2) {
-        // Two points: the plain line already has round caps.
-        g.c.drawLine(v[0], v[1], g.colour, g.stroke);
-        return;
-    }
-    ComPtr<ID2D1PathGeometry> geo = buildPath(g.c, v, closed, false);
-    ID2D1SolidColorBrush* b = g.c.brush(g.colour);
-    if (!geo || b == nullptr || g.c.ctx() == nullptr) {
-        return;
-    }
-    g.c.ctx()->DrawGeometry(geo.Get(), b, g.stroke, roundStrokeStyle(g.c));
+    const std::vector<Point> v(pts);
+    g.c.strokePolyline(v.data(), v.size(), closed, g.colour, g.stroke);
 }
 
 /**
  * @brief Fills a polygon.
  */
 void polygon(const Glyph& g, std::initializer_list<Point> pts) {
-    std::vector<Point> v(pts);
-    ComPtr<ID2D1PathGeometry> geo = buildPath(g.c, v, true, true);
-    ID2D1SolidColorBrush* b = g.c.brush(g.colour);
-    if (!geo || b == nullptr || g.c.ctx() == nullptr) {
-        return;
-    }
-    g.c.ctx()->FillGeometry(geo.Get(), b, nullptr);
+    const std::vector<Point> v(pts);
+    g.c.fillPolygon(v.data(), v.size(), g.colour);
 }
 
 /**
  * @brief Strokes the almond (eye) outline: two symmetric arcs between the corners.
  */
 void almond(const Glyph& g, Point left, Point right, float bulge) {
-    if (g.c.ctx() == nullptr) {
-        return;
-    }
-    ComPtr<ID2D1Factory> factory;
-    g.c.ctx()->GetFactory(factory.GetAddressOf());
-    if (!factory) {
-        return;
-    }
-    ComPtr<ID2D1PathGeometry> geometry;
-    if (FAILED(factory->CreatePathGeometry(geometry.GetAddressOf())) || !geometry) {
-        return;
-    }
-    ComPtr<ID2D1GeometrySink> sink;
-    if (FAILED(geometry->Open(sink.GetAddressOf())) || !sink) {
-        return;
-    }
-    // The arc radius follows from the chord and the requested bulge (sagitta).
-    const float chord = std::max(0.001f, right.x - left.x);
-    const float half = chord * 0.5f;
-    const float s = std::max(0.001f, bulge);
-    const float radius = (half * half + s * s) / (2.0f * s);
-    sink->BeginFigure(left.toD2D(), D2D1_FIGURE_BEGIN_HOLLOW);
-    sink->AddArc(D2D1::ArcSegment(right.toD2D(), D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
-    sink->AddArc(D2D1::ArcSegment(left.toD2D(), D2D1::SizeF(radius, radius), 0.0f, D2D1_SWEEP_DIRECTION_CLOCKWISE, D2D1_ARC_SIZE_SMALL));
-    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
-    if (FAILED(sink->Close())) {
-        return;
-    }
-    ID2D1SolidColorBrush* b = g.c.brush(g.colour);
-    if (b == nullptr) {
-        return;
-    }
-    g.c.ctx()->DrawGeometry(geometry.Get(), b, g.stroke, nullptr);
+    g.c.strokeLens(left, right, bulge, g.colour, g.stroke);
 }
 
 /**

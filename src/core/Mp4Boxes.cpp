@@ -14,7 +14,6 @@
 
 #include "core/Logger.h"
 #include "platform/FileIo.h"
-#include "platform/Handle.h"
 #include "platform/Utf.h"
 
 #include <algorithm>
@@ -340,16 +339,16 @@ Mp4Layout walkBoxes(const ByteSource& src, bool& ioFailure) {
 }
 
 /**
- * @brief Positions the file pointer and reads exactly @p len bytes.
+ * @brief Reads exactly @p len bytes at @p offset.
  *
- * ReadFile may legitimately return fewer bytes than requested, so the read
- * loops until the request is satisfied or the file reports EOF / an error.
+ * A read may legitimately return fewer bytes than requested, so this loops
+ * until the request is satisfied or the file reports EOF / an error.
  *
- * @param lastError receives GetLastError() on failure (0 on a short read)
+ * @param lastError receives the (Win32-numbered) error on failure (0 on a short read)
  */
-bool readExact(HANDLE file, uint64_t offset, uint8_t* dst, size_t len, DWORD& lastError) {
+bool readExact(platform::FileReader& file, uint64_t offset, uint8_t* dst, size_t len, DWORD& lastError) {
     lastError = 0;
-    if (file == nullptr || file == INVALID_HANDLE_VALUE || dst == nullptr) {
+    if (!file.isOpen() || dst == nullptr) {
         lastError = ERROR_INVALID_HANDLE;
         return false;
     }
@@ -361,29 +360,20 @@ bool readExact(HANDLE file, uint64_t offset, uint8_t* dst, size_t len, DWORD& la
         return false;
     }
 
-    // Seek to the absolute offset first.
-    LARGE_INTEGER pos;
-    pos.QuadPart = static_cast<LONGLONG>(offset);
-    if (!::SetFilePointerEx(file, pos, nullptr, FILE_BEGIN)) {
-        lastError = ::GetLastError();
-        return false;
-    }
-
     // Read until the whole request is satisfied.
     size_t done = 0;
     while (done < len) {
-        const size_t remaining = len - done;
-        const DWORD chunk = static_cast<DWORD>(std::min<size_t>(remaining, 1u << 20));
-        DWORD got = 0;
-        if (!::ReadFile(file, dst + done, chunk, &got, nullptr)) {
-            lastError = ::GetLastError();
+        size_t got = 0;
+        DWORD err = 0;
+        if (!file.readAt(offset + done, dst + done, len - done, got, err)) {
+            lastError = err;
             return false;
         }
         if (got == 0) {
             // EOF before we got everything: a short read.
             return false;
         }
-        done += static_cast<size_t>(got);
+        done += got;
     }
     return true;
 }
@@ -407,32 +397,29 @@ Result<Mp4Layout> inspectMp4(const std::wstring& path) {
         return Error::text(L"inspectMp4: empty path");
     }
 
-    // Open read-only with share R|W|D; the \\?\ prefix covers long paths.
-    const std::wstring ext = platform::toExtendedPath(path);
-    platform::UniqueHandle file(::CreateFileW(ext.c_str(), GENERIC_READ,
-                                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                              OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
-    if (!file) {
-        return Error::fromLastError(std::format(L"open '{}'", path));
+    // Open read-only with full sharing (Windows: share R|W|D, long paths handled).
+    platform::FileReader file;
+    if (auto opened = file.open(path, false); !opened) {
+        Error e = opened.error();
+        e.message = std::format(L"open '{}': {}", path, e.message);
+        return e;
     }
 
     // The size decides where the top-level chain must end.
-    LARGE_INTEGER size{};
-    if (!::GetFileSizeEx(file.get(), &size)) {
-        return Error::fromLastError(std::format(L"size of '{}'", path));
-    }
-    if (size.QuadPart < 0) {
-        return Error::text(std::format(L"negative size reported for '{}'", path));
+    const auto size = file.size();
+    if (!size) {
+        Error e = size.error();
+        e.message = std::format(L"size of '{}': {}", path, e.message);
+        return e;
     }
 
-    // Wire the walker to ReadFile; the last Win32 error is kept for the report.
+    // Wire the walker to the reader; the last error is kept for the report.
     DWORD readError = 0;
-    const HANDLE raw = file.get();
     ByteSource src;
-    src.size = static_cast<uint64_t>(size.QuadPart);
-    src.read = [raw, &readError](uint64_t offset, uint8_t* dst, size_t len) -> bool {
+    src.size = size.value();
+    src.read = [&file, &readError](uint64_t offset, uint8_t* dst, size_t len) -> bool {
         DWORD err = 0;
-        const bool ok = readExact(raw, offset, dst, len, err);
+        const bool ok = readExact(file, offset, dst, len, err);
         if (!ok && err != 0) {
             readError = err;
         }

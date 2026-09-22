@@ -1,20 +1,25 @@
 // ---------------------------------------------------------------------------
-// test_quoting.cpp - command-line quoting for CreateProcessW: quoteArgument
-// and buildCommandLine, checked against the expected text and against the
-// one parser that matters, CommandLineToArgvW.
+// test_quoting.cpp - command-line quoting: quoteArgument and buildCommandLine,
+// checked against the expected text and against the one parser that matters
+// on each platform (CommandLineToArgvW on Windows, /bin/sh on macOS).
 // ---------------------------------------------------------------------------
 #include "test_framework.h"
 
 #include "platform/Process.h"
+#include "platform/Utf.h"
 #include "platform/Win.h"
 
+#if defined(_WIN32)
 #include <shellapi.h>
+#endif
 
 #include <cstddef>
 #include <string>
 #include <vector>
 
 namespace platform = hh::platform;
+
+#if defined(_WIN32)
 
 namespace {
 
@@ -164,3 +169,84 @@ HH_TEST(Quoting_roundTripsThroughCommandLineToArgvW) {
         checkRoundTrip(L"C:\\Tools\\mkvmerge.exe", {arg});
     }
 }
+
+#else  // ---- POSIX: sh-style single quoting -------------------------------------------
+
+namespace {
+
+/**
+ * @brief Asks the real /bin/sh to split a quoted argument list and hands
+ *        back what it saw (NUL-separated printf output).
+ */
+std::vector<std::wstring> splitWithShell(const std::wstring& quotedArgs) {
+    std::vector<std::wstring> out;
+    const std::wstring script = L"for a in " + quotedArgs + L"; do printf '%s\\0' \"$a\"; done";
+    auto r = platform::runCapture(L"/bin/sh", {L"-c", script}, 10000);
+    if (!r || r.value().exitCode != 0) {
+        return out;
+    }
+    const std::string& bytes = r.value().output;
+    size_t start = 0;
+    for (size_t i = 0; i < bytes.size(); ++i) {
+        if (bytes[i] == '\0') {
+            out.push_back(platform::toWide(std::string_view(bytes.data() + start, i - start)));
+            start = i + 1;
+        }
+    }
+    return out;
+}
+
+/// Quotes every argument, lets the shell split them, and checks the round trip.
+void checkShellRoundTrip(const std::vector<std::wstring>& args) {
+    std::wstring joined;
+    for (const std::wstring& a : args) {
+        if (!joined.empty()) {
+            joined.push_back(L' ');
+        }
+        joined += platform::quoteArgument(a);
+    }
+    const std::vector<std::wstring> parsed = splitWithShell(joined);
+    if (!CHECK_EQ(parsed.size(), args.size())) {
+        return;
+    }
+    for (size_t i = 0; i < args.size(); ++i) {
+        CHECK_WEQ(parsed[i], args[i]);
+    }
+}
+
+} // namespace
+
+HH_TEST(Quoting_plainArgumentsAreUnchanged) {
+    CHECK_WEQ(platform::quoteArgument(L"a"), L"a");
+    CHECK_WEQ(platform::quoteArgument(L"-J"), L"-J");
+    CHECK_WEQ(platform::quoteArgument(L"--color-range"), L"--color-range");
+    CHECK_WEQ(platform::quoteArgument(L"0:0.708,0.292,0.170,0.797,0.131,0.046"), L"0:0.708,0.292,0.170,0.797,0.131,0.046");
+    CHECK_WEQ(platform::quoteArgument(L"/Volumes/Media/clip.mp4"), L"/Volumes/Media/clip.mp4");
+}
+
+HH_TEST(Quoting_specialCharactersGetSingleQuoted) {
+    CHECK_WEQ(platform::quoteArgument(L"a b"), L"'a b'");
+    CHECK_WEQ(platform::quoteArgument(L""), L"''");
+    CHECK_WEQ(platform::quoteArgument(L"/Users/me/My Renders/clip.mp4"), L"'/Users/me/My Renders/clip.mp4'");
+    CHECK_WEQ(platform::quoteArgument(L"$HOME"), L"'$HOME'");
+    // An embedded single quote closes, escapes and reopens.
+    CHECK_WEQ(platform::quoteArgument(L"it's"), L"'it'\\''s'");
+}
+
+HH_TEST(Quoting_buildCommandLineJoinsQuotedPieces) {
+    const std::wstring line = platform::buildCommandLine(
+        L"/Applications/MKVToolNix-90.0.app/Contents/MacOS/mkvmerge", {L"-J", L"/tmp/a b.mp4"});
+    CHECK_WEQ(line, L"/Applications/MKVToolNix-90.0.app/Contents/MacOS/mkvmerge -J '/tmp/a b.mp4'");
+    CHECK_WEQ(platform::buildCommandLine(L"/usr/local/bin/mkvmerge", {}), L"/usr/local/bin/mkvmerge");
+    CHECK_WEQ(platform::buildCommandLine(L"x", {L"", L"y"}), L"x '' y");
+}
+
+HH_TEST(Quoting_roundTripsThroughTheShell) {
+    checkShellRoundTrip({L"-J", L"/tmp/a b.mp4"});
+    checkShellRoundTrip({L"--output", L"/Volumes/YouTube Renders/clip_REC709_HINT.mkv",
+                         L"--chromaticity-coordinates", L"0:0.708,0.292,0.170,0.797,0.131,0.046"});
+    checkShellRoundTrip({L"it's", L"\"quoted\"", L"back\\slash", L"$HOME", L"*.mp4", L"a;b|c&d", L"tab\there"});
+    checkShellRoundTrip({L"\u00c9pisode 04 \u65e5\u672c\u8a9e.mp4"});
+}
+
+#endif

@@ -276,7 +276,7 @@ RunStyles stylesFor(const TextStyle& base) {
     s.normal = base;
     s.normal.wrap = false;
     s.bold = s.normal;
-    s.bold.weight = DWRITE_FONT_WEIGHT_SEMI_BOLD;
+    s.bold.weight = FontWeight::SemiBold;
     s.code = typography::mono();
     return s;
 }

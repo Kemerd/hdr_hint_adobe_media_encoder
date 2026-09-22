@@ -61,8 +61,13 @@ public:
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
 
+#if defined(_WIN32)
     /// Starts the workers. Events are kicked to (hwnd, message).
     Result<void> start(HWND eventTarget, UINT eventMessage);
+#endif
+    /// Starts the workers. @p kick wakes the UI thread (any thread may call it),
+    /// which must then call onEventMessage().
+    Result<void> start(EngineKick kick);
     /// Stops the workers (cancels probes; a running mux is cancelled unless @p waitForMux).
     void stop(bool waitForMux);
     /// Drains and applies queued worker events. Call on the kick message.
@@ -82,6 +87,9 @@ public:
     [[nodiscard]] std::vector<std::wstring> watchFolders() const;
 
     // ---- commands -----------------------------------------------------------
+    /// Moves @p lutPath to the front of the recents, so every LUT chooser
+    /// lists it. Used when the user picks a .cube from outside the LUT folder.
+    void rememberLut(const std::wstring& lutPath);
     void runJob(JobId id);                       ///< Ready/Held/Failed/Skipped -> dispatch (re-probes when needed)
     void holdJob(JobId id);                      ///< Ready -> Held (or sets the hold flag while Encoding)
     void resumeJob(JobId id);                    ///< clears hold; dispatches when Ready
@@ -126,6 +134,9 @@ public:
     [[nodiscard]] EffectivePlan resolvePlan(const Job& job) const;
 
 private:
+    /// Everything start() does once the queue knows where to kick.
+    Result<void> startWorkers();
+
     // event application
     void apply(LogItemEvent& e);
     void apply(LogQueueEvent& e);
@@ -153,7 +164,6 @@ private:
     void inferTransfer(Job& job, TransferKind kind, const wchar_t* source);
     void registerFolder(const std::wstring& folder);
     void refreshLuts();
-    void rememberLut(const std::wstring& lutPath);
     void cepStartedPathsEraseFor(JobId id);
     void notifyJobs();
     void notifyLink();

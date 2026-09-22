@@ -169,6 +169,99 @@ Result<FileIdentity> identity(std::wstring_view path) {
     return id;
 }
 
+Result<FileAttributes> fileAttributes(std::wstring_view path) {
+    // One metadata query; never opens the file, so AME's exclusive lock is irrelevant.
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!::GetFileAttributesExW(toExtendedPath(path).c_str(), GetFileExInfoStandard, &data)) {
+        return Error::fromLastError(L"GetFileAttributesEx " + std::wstring(path));
+    }
+    FileAttributes a;
+    a.size = (static_cast<uint64_t>(data.nFileSizeHigh) << 32) | data.nFileSizeLow;
+    a.lastWriteUtc = ftToU64(data.ftLastWriteTime);
+    a.creationUtc = ftToU64(data.ftCreationTime);
+    a.isDirectory = (data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+    return a;
+}
+
+// ---- FileReader --------------------------------------------------------------------
+
+FileReader::~FileReader() {
+    close();
+}
+
+FileReader::FileReader(FileReader&& other) noexcept : handle_(std::move(other.handle_)) {}
+
+FileReader& FileReader::operator=(FileReader&& other) noexcept {
+    if (this != &other) {
+        handle_ = std::move(other.handle_);
+    }
+    return *this;
+}
+
+Result<void> FileReader::open(std::wstring_view path, bool sequential) {
+    close();
+    if (path.empty()) {
+        return Error::fromWin32(ERROR_INVALID_PARAMETER, L"FileReader::open: empty path");
+    }
+    // Share everything: a log writer or AME finalising a file must never see a sharing violation from us.
+    handle_ = openShared(path, GENERIC_READ, sequential ? FILE_FLAG_SEQUENTIAL_SCAN : FILE_FLAG_RANDOM_ACCESS);
+    if (!handle_) {
+        return Error::fromLastError(L"CreateFile(read) " + std::wstring(path));
+    }
+    return Result<void>::success();
+}
+
+void FileReader::close() noexcept {
+    handle_.reset();
+}
+
+bool FileReader::isOpen() const noexcept {
+    return handle_.valid();
+}
+
+bool FileReader::readAt(uint64_t offset, void* dst, size_t length, size_t& got, DWORD& lastError) noexcept {
+    got = 0;
+    lastError = 0;
+    if (!handle_ || dst == nullptr) {
+        lastError = ERROR_INVALID_HANDLE;
+        return false;
+    }
+    if (length == 0) {
+        return true;
+    }
+    // Position, then one bounded read; callers loop for more.
+    LARGE_INTEGER pos{};
+    pos.QuadPart = static_cast<LONGLONG>(offset);
+    if (!::SetFilePointerEx(handle_.get(), pos, nullptr, FILE_BEGIN)) {
+        lastError = ::GetLastError();
+        return false;
+    }
+    const DWORD want = static_cast<DWORD>(std::min<size_t>(length, kChunk));
+    DWORD read = 0;
+    if (!::ReadFile(handle_.get(), dst, want, &read, nullptr)) {
+        const DWORD err = ::GetLastError();
+        // Reading past the end of a file that shrank is EOF, not a failure.
+        if (err == ERROR_HANDLE_EOF) {
+            return true;
+        }
+        lastError = err;
+        return false;
+    }
+    got = static_cast<size_t>(read);
+    return true;
+}
+
+Result<uint64_t> FileReader::size() const {
+    if (!handle_) {
+        return Error::fromWin32(ERROR_INVALID_HANDLE, L"FileReader::size: not open");
+    }
+    LARGE_INTEGER size{};
+    if (!::GetFileSizeEx(handle_.get(), &size) || size.QuadPart < 0) {
+        return Error::fromLastError(L"GetFileSizeEx");
+    }
+    return static_cast<uint64_t>(size.QuadPart);
+}
+
 // ---- reading ---------------------------------------------------------------------
 
 Result<std::vector<uint8_t>> readAll(std::wstring_view path, uint64_t maxBytes) {

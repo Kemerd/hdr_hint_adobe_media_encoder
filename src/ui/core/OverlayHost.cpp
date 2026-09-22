@@ -198,17 +198,9 @@ void OverlayHost::showPopup(std::unique_ptr<Widget> content, const Rect& anchorR
     // Bound the content by the work area of the monitor that hosts the window
     // so a long menu can decide to scroll instead of running off the screen.
     Size maxSize{1e9f, 1e9f};
-    const HWND hwnd = r->window().hwnd();
-    if (hwnd) {
-        const HMONITOR mon = ::MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO mi{};
-        mi.cbSize = sizeof(mi);
-        if (mon && ::GetMonitorInfoW(mon, &mi)) {
-            const DipScale scale = r->window().dipScale();
-            const float workW = scale.toDip(static_cast<float>(mi.rcWork.right - mi.rcWork.left));
-            const float workH = scale.toDip(static_cast<float>(mi.rcWork.bottom - mi.rcWork.top));
-            maxSize = {std::max(0.0f, workW - 16.0f), std::max(0.0f, workH - 16.0f)};
-        }
+    const Size work = r->window().workAreaSizeDips();
+    if (work.w > 0.0f && work.h > 0.0f) {
+        maxSize = {std::max(0.0f, work.w - 16.0f), std::max(0.0f, work.h - 16.0f)};
     }
     Size contentSize = content->measure(Constraints::loose(maxSize));
     contentSize.w = std::max(0.0f, contentSize.w);

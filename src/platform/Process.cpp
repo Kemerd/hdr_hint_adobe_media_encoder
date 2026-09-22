@@ -931,6 +931,47 @@ std::vector<DWORD> findProcessesByImageName(std::wstring_view imageName) {
 }
 
 /**
+ * @brief All pids whose image name starts with @p prefix (case-insensitive).
+ */
+std::vector<DWORD> findProcessesByImagePrefix(std::wstring_view prefix) {
+    std::vector<DWORD> pids;
+    if (prefix.empty()) {
+        return pids;
+    }
+    forEachProcess([&](const PROCESSENTRY32W& entry) {
+        const std::wstring_view exe(entry.szExeFile, ::wcsnlen(entry.szExeFile, MAX_PATH));
+        if (istartsWith(exe, prefix)) {
+            pids.push_back(entry.th32ProcessID);
+        }
+        return true;
+    });
+    return pids;
+}
+
+/**
+ * @brief SearchPathW over the default search order; the buffer grows once.
+ */
+std::wstring searchPath(std::wstring_view fileName) {
+    if (fileName.empty() || fileName.find(L'\0') != std::wstring_view::npos) {
+        return {};
+    }
+    const std::wstring name(fileName);
+    std::vector<wchar_t> buffer(MAX_PATH, L'\0');
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const DWORD needed = ::SearchPathW(nullptr, name.c_str(), nullptr, static_cast<DWORD>(buffer.size()),
+                                           buffer.data(), nullptr);
+        if (needed == 0) {
+            return {};
+        }
+        if (needed < buffer.size()) {
+            return std::wstring(buffer.data(), needed);
+        }
+        buffer.assign(static_cast<size_t>(needed) + 1u, L'\0');
+    }
+    return {};
+}
+
+/**
  * @brief True when a process with that pid is alive.
  *
  * Opens the process and checks it has not signalled; when it cannot be
