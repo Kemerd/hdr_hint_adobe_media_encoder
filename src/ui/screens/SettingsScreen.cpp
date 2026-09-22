@@ -421,6 +421,7 @@ void SettingsScreen::buildBehaviour()
     autoProcessWatched_ = addToggleRow(group, L"From watch folders",
                                        L"Any new video that appears in a folder below",
                                        [this](bool on) { vm_.setAutoProcessWatched(on); });
+#if defined(_WIN32)
     recycle_ = addToggleRow(group, L"Move original to Recycle Bin after success", L"",
                             [this](bool on) { vm_.setRecycleOriginal(on); });
     dock_ = addToggleRow(group, L"Dock inside Media Encoder",
@@ -435,6 +436,22 @@ void SettingsScreen::buildBehaviour()
     showOnAmeLaunch_ = addToggleRow(group, L"Open when Media Encoder starts",
                                     L"Off: waits in the tray until you open the panel",
                                     [this](bool on) { vm_.setShowOnAmeLaunch(on); });
+#else
+    // macOS: the Trash, the menu bar and Login Items; docking is a Windows feature.
+    recycle_ = addToggleRow(group, L"Move original to the Trash after success", L"",
+                            [this](bool on) { vm_.setRecycleOriginal(on); });
+    alwaysOnTop_ = addToggleRow(group, L"Keep window on top", L"", [this](bool on) { vm_.setAlwaysOnTop(on); });
+    minimizeToTray_ = addToggleRow(group, L"Keep running in the menu bar",
+                                   L"Closing the window leaves HDR Hint watching from the menu bar",
+                                   [this](bool on) { vm_.setMinimizeToTray(on); });
+    startMinimized_ = addToggleRow(group, L"Start hidden in the menu bar", L"", [this](bool on) { vm_.setStartMinimized(on); });
+    startWithWindows_ = addToggleRow(group, L"Open at login",
+                                     L"Only needed if Media Encoder does not start HDR Hint itself",
+                                     [this](bool on) { vm_.setStartWithWindows(on); });
+    showOnAmeLaunch_ = addToggleRow(group, L"Open when Media Encoder starts",
+                                    L"Off: waits in the menu bar until you open it",
+                                    [this](bool on) { vm_.setShowOnAmeLaunch(on); });
+#endif
     quitWithAme_ = addToggleRow(group, L"Quit when Media Encoder quits",
                                 L"Waits for any running mux to finish first",
                                 [this](bool on) { vm_.setQuitWithAme(on); });

@@ -160,6 +160,7 @@ struct LinkView {
     bool logFound = false;
     bool queueRunning = false;
     bool docked = false;
+    bool dockingSupported = true;   ///< false on macOS: the dock toggles hide themselves
     std::wstring tooltip;
 };
 

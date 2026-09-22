@@ -1,11 +1,17 @@
 // ---------------------------------------------------------------------------
 // Geometry.h - value types for the UI (all coordinates in dips).
+//
+// Platform-neutral. The toD2D() conversions exist only in the Windows build,
+// where the Direct2D backend consumes them; macOS converts to CoreGraphics
+// types inside its own backend.
 // ---------------------------------------------------------------------------
 #pragma once
 
 #include "platform/Win.h"
 
+#if defined(_WIN32)
 #include <d2d1_1.h>
+#endif
 
 #include <algorithm>
 #include <cmath>
@@ -21,7 +27,9 @@ struct Point {
     Point operator+(const Point& o) const { return {x + o.x, y + o.y}; }
     Point operator-(const Point& o) const { return {x - o.x, y - o.y}; }
     Point operator*(float s) const { return {x * s, y * s}; }
+#if defined(_WIN32)
     [[nodiscard]] D2D1_POINT_2F toD2D() const { return D2D1::Point2F(x, y); }
+#endif
 };
 
 struct Size {
@@ -72,7 +80,9 @@ struct Rect {
         if (o.isEmpty()) return *this;
         return fromLTRB(std::min(x, o.x), std::min(y, o.y), std::max(right(), o.right()), std::max(bottom(), o.bottom()));
     }
+#if defined(_WIN32)
     [[nodiscard]] D2D1_RECT_F toD2D() const { return D2D1::RectF(x, y, x + w, y + h); }
+#endif
     bool operator==(const Rect& o) const { return x == o.x && y == o.y && w == o.w && h == o.h; }
     bool operator!=(const Rect& o) const { return !(*this == o); }
 };
@@ -105,9 +115,64 @@ struct Color {
     }
     /// Relative luminance (sRGB approximation) for "is this light?" decisions.
     [[nodiscard]] float luminance() const { return 0.2126f * r + 0.7152f * g + 0.0722f * b; }
+#if defined(_WIN32)
     [[nodiscard]] D2D1_COLOR_F toD2D() const { return D2D1::ColorF(r, g, b, a); }
+#endif
     bool operator==(const Color& o) const { return r == o.r && g == o.g && b == o.b && a == o.a; }
     bool operator!=(const Color& o) const { return !(*this == o); }
+};
+
+/**
+ * @brief A 2-D affine transform (row-vector convention, same layout as
+ *        D2D1_MATRIX_3X2_F and CGAffineTransform):
+ *
+ *     [x' y'] = [x y 1] * | m11 m12 |
+ *                         | m21 m22 |
+ *                         | dx  dy  |
+ *
+ * a * b means "apply a, then b" - exactly how Direct2D composes matrices.
+ */
+struct Transform2D {
+    float m11 = 1.0f, m12 = 0.0f;
+    float m21 = 0.0f, m22 = 1.0f;
+    float dx = 0.0f, dy = 0.0f;
+
+    static Transform2D identity() { return {}; }
+    /// Moves by (x, y).
+    static Transform2D translation(float x, float y) {
+        Transform2D t;
+        t.dx = x;
+        t.dy = y;
+        return t;
+    }
+    /// Scales by (sx, sy) about @p center (which stays where it is).
+    static Transform2D scale(float sx, float sy, Point center = {}) {
+        Transform2D t;
+        t.m11 = sx;
+        t.m22 = sy;
+        t.dx = center.x - sx * center.x;
+        t.dy = center.y - sy * center.y;
+        return t;
+    }
+    /// This transform followed by @p o.
+    Transform2D operator*(const Transform2D& o) const {
+        Transform2D r;
+        r.m11 = m11 * o.m11 + m12 * o.m21;
+        r.m12 = m11 * o.m12 + m12 * o.m22;
+        r.m21 = m21 * o.m11 + m22 * o.m21;
+        r.m22 = m21 * o.m12 + m22 * o.m22;
+        r.dx = dx * o.m11 + dy * o.m21 + o.dx;
+        r.dy = dx * o.m12 + dy * o.m22 + o.dy;
+        return r;
+    }
+    /// Maps a point through the transform.
+    [[nodiscard]] Point apply(Point p) const { return {p.x * m11 + p.y * m21 + dx, p.x * m12 + p.y * m22 + dy}; }
+    [[nodiscard]] bool isIdentity() const {
+        return m11 == 1.0f && m12 == 0.0f && m21 == 0.0f && m22 == 1.0f && dx == 0.0f && dy == 0.0f;
+    }
+#if defined(_WIN32)
+    [[nodiscard]] D2D1_MATRIX_3X2_F toD2D() const { return D2D1::Matrix3x2F(m11, m12, m21, m22, dx, dy); }
+#endif
 };
 
 /**

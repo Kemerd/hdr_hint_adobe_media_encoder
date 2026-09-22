@@ -8,10 +8,13 @@
 #include "platform/Time.h"
 #include "platform/Win.h"
 
+#include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <format>
 #include <optional>
 #include <string>
+#include <thread>
 
 namespace platform = hh::platform;
 
@@ -19,12 +22,14 @@ namespace {
 
 /**
  * @brief Renders a parsed timestamp as local "YYYY-MM-DD HH:MM:SS" using the
- *        OS conversions directly (FileTimeToSystemTime followed by
- *        SystemTimeToTzSpecificLocalTime), so the parser is checked against
- *        Windows rather than against its own formatting code.
+ *        OS conversions directly (Windows: FileTimeToSystemTime followed by
+ *        SystemTimeToTzSpecificLocalTime; POSIX: localtime_r), so the parser
+ *        is checked against the operating system rather than against its own
+ *        formatting code.
  */
 std::wstring localText(const std::optional<uint64_t>& utc) {
     if (!utc) { return L"(nullopt)"; }
+#if defined(_WIN32)
     const FILETIME ft = platform::uint64ToFileTime(*utc);
     SYSTEMTIME st{};
     if (!::FileTimeToSystemTime(&ft, &st)) { return L"(FileTimeToSystemTime failed)"; }
@@ -32,6 +37,13 @@ std::wstring localText(const std::optional<uint64_t>& utc) {
     if (!::SystemTimeToTzSpecificLocalTime(nullptr, &st, &local)) { return L"(SystemTimeToTzSpecificLocalTime failed)"; }
     return std::format(L"{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
                        local.wYear, local.wMonth, local.wDay, local.wHour, local.wMinute, local.wSecond);
+#else
+    const std::time_t seconds = static_cast<std::time_t>(platform::utcToUnixMs(*utc) / 1000);
+    std::tm local{};
+    if (::localtime_r(&seconds, &local) == nullptr) { return L"(localtime_r failed)"; }
+    return std::format(L"{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+                       local.tm_year + 1900, local.tm_mon + 1, local.tm_mday, local.tm_hour, local.tm_min, local.tm_sec);
+#endif
 }
 
 } // namespace
@@ -191,6 +203,7 @@ HH_TEST(Time_formatDuration) {
 
 // ---- FILETIME / Unix conversions -----------------------------------------------
 
+#if defined(_WIN32)
 /**
  * @brief fileTimeToUint64 and uint64ToFileTime are exact inverses and split
  *        the value into the expected low/high words.
@@ -216,6 +229,7 @@ HH_TEST(Time_fileTimeRoundTrip) {
         CHECK_EQ(platform::fileTimeToUint64(platform::uint64ToFileTime(v)), v);
     }
 }
+#endif
 
 /**
  * @brief utcToUnixMs and unixMsToUtc round-trip a 2026 instant, agree on the
@@ -260,7 +274,7 @@ HH_TEST(Time_monotonicClockNeverGoesBackwards) {
     CHECK(b >= a);
 
     // A short sleep must show up as elapsed time.
-    ::Sleep(15);
+    std::this_thread::sleep_for(std::chrono::milliseconds(15));
     const uint64_t c = platform::nowMonotonicMs();
     CHECK(c >= b);
     CHECK(c - a >= 5);

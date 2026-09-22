@@ -22,7 +22,9 @@ constexpr const wchar_t* kLog = L"Guide";
 // IDR_GUIDE_MARKDOWN from resources/resource.h. The literal is repeated here
 // because that header belongs to the executable target only; the UI library
 // must not reach into it.
+#if defined(_WIN32)
 constexpr WORD kGuideResourceId = 201;
+#endif
 
 // A guide bigger than this is not a guide; refuse to slurp it.
 constexpr uint64_t kMaxGuideBytes = 4ull * 1024 * 1024;
@@ -33,6 +35,10 @@ constexpr uint64_t kMaxGuideBytes = 4ull * 1024 * 1024;
  *         a host that is not HdrHint.exe) or unreadable.
  */
 std::wstring loadEmbeddedGuide() {
+#if !defined(_WIN32)
+    // macOS ships GUIDE.md in the bundle's Resources; there is no RCDATA.
+    return {};
+#else
     // A null module means "the executable that started this process".
     HMODULE module = ::GetModuleHandleW(nullptr);
     if (!module) {
@@ -60,6 +66,7 @@ std::wstring loadEmbeddedGuide() {
         return {};
     }
     return decodeGuideBytes(static_cast<const uint8_t*>(data), static_cast<size_t>(size));
+#endif
 }
 
 /**
@@ -84,7 +91,9 @@ std::wstring readGuideFile(const std::wstring& file) {
  */
 std::vector<std::wstring> guideFileCandidates() {
     std::vector<std::wstring> out;
-    const std::wstring exeDir = platform::exeDirectory();
+    // The shipped copy sits with the other assets (next to the exe on
+    // Windows, in HdrHint.app/Contents/Resources on macOS).
+    const std::wstring exeDir = platform::resourceDirectory();
     if (exeDir.empty()) {
         HH_LOG_WARN(kLog, L"exe directory unknown; skipping on-disk guide lookup");
         return out;
@@ -92,7 +101,11 @@ std::vector<std::wstring> guideFileCandidates() {
     out.push_back(path::join(exeDir, L"GUIDE.md"));
 
     // fullPath collapses the "..\.." so logs and Explorer show a clean path.
+#if defined(_WIN32)
     const std::wstring repoCopy = platform::fullPath(path::join(exeDir, L"..\\..\\docs\\GUIDE.md"));
+#else
+    const std::wstring repoCopy = platform::fullPath(path::join(platform::exeDirectory(), L"../../docs/GUIDE.md"));
+#endif
     if (!repoCopy.empty()) {
         out.push_back(repoCopy);
     }

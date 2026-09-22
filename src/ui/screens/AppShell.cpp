@@ -170,7 +170,8 @@ AppShell::AppShell(IQueueViewModel& queue, ISettingsViewModel& settings, ILinkVi
 
     // The dock toggle in the queue footer flips the link view model.
     if (queue_ && queue_->footer()) {
-        queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked_, linkVm_.link().docked);
+        queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked_ && linkVm_.link().dockingSupported,
+                                        linkVm_.link().docked);
     }
 }
 
@@ -324,7 +325,8 @@ void AppShell::setDockedLayout(bool docked) {
     if (topBar_) { topBar_->stack().padding.right = docked ? kTopBarPadding : 0.0f; }
     // The footer's dock switch only makes sense while floating.
     if (queue_ && queue_->footer()) {
-        queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked, linkVm_.link().docked);
+        queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked && linkVm_.link().dockingSupported,
+                                        linkVm_.link().docked);
     }
     invalidateLayout();
 }
@@ -374,7 +376,7 @@ void AppShell::refreshLink() {
         status_->setTooltipText(lv.tooltip.empty() ? label : lv.tooltip);
     }
     if (queue_ && queue_->footer()) {
-        queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked_, lv.docked);
+        queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked_ && lv.dockingSupported, lv.docked);
     }
 }
 

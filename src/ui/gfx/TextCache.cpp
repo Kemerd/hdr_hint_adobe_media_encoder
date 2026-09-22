@@ -178,7 +178,7 @@ IDWriteTextFormat* TextCache::format(const TextStyle& style) {
     const std::wstring& family = familyName(style.family);
     const float size = std::max(1.0f, style.size);
     ComPtr<IDWriteTextFormat> fmt;
-    HRESULT hr = factory_->CreateTextFormat(family.empty() ? L"Segoe UI" : family.c_str(), nullptr, style.weight,
+    HRESULT hr = factory_->CreateTextFormat(family.empty() ? L"Segoe UI" : family.c_str(), nullptr, static_cast<DWRITE_FONT_WEIGHT>(style.weight),
                                             style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
                                             DWRITE_FONT_STRETCH_NORMAL, size, L"en-us", fmt.GetAddressOf());
     if (FAILED(hr) || !fmt) {
@@ -343,7 +343,7 @@ TextCache::LineMetrics TextCache::lineMetrics(const TextStyle& style) {
         }
         ComPtr<IDWriteFont> font;
         if (SUCCEEDED(hr) && fontFamily) {
-            hr = fontFamily->GetFirstMatchingFont(style.weight, DWRITE_FONT_STRETCH_NORMAL,
+            hr = fontFamily->GetFirstMatchingFont(static_cast<DWRITE_FONT_WEIGHT>(style.weight), DWRITE_FONT_STRETCH_NORMAL,
                                                   style.italic ? DWRITE_FONT_STYLE_ITALIC : DWRITE_FONT_STYLE_NORMAL,
                                                   font.GetAddressOf());
         }
@@ -439,6 +439,84 @@ std::wstring TextCache::ellipsizeMiddle(std::wstring_view text, const TextStyle&
 void TextCache::clearLayouts() {
     layouts_.clear();
     lru_.clear();
+}
+
+// ---- layout queries ------------------------------------------------------------
+
+/**
+ * @brief GetMetrics: width including trailing whitespace, and height.
+ */
+Size TextCache::layoutSize(const TextLayoutRef& layout) {
+    if (!layout) {
+        return {};
+    }
+    DWRITE_TEXT_METRICS m = {};
+    if (FAILED(layout->GetMetrics(&m))) {
+        return {};
+    }
+    return {std::max(0.0f, m.widthIncludingTrailingWhitespace), std::max(0.0f, m.height)};
+}
+
+/**
+ * @brief HitTestTextPosition on the leading edge of @p pos.
+ */
+float TextCache::caretX(const TextLayoutRef& layout, size_t pos) {
+    if (!layout) {
+        return 0.0f;
+    }
+    FLOAT x = 0.0f;
+    FLOAT y = 0.0f;
+    DWRITE_HIT_TEST_METRICS m{};
+    const HRESULT hr = layout->HitTestTextPosition(static_cast<UINT32>(pos), FALSE, &x, &y, &m);
+    if (FAILED(hr)) {
+        HH_LOG_WARN(kLog, L"HitTestTextPosition({}) failed: 0x{:08X}", pos, static_cast<unsigned>(hr));
+        return 0.0f;
+    }
+    return x;
+}
+
+/**
+ * @brief HitTestPoint, with the trailing half of a glyph mapping to the next position.
+ */
+bool TextCache::hitTest(const TextLayoutRef& layout, float x, float y, size_t& position) {
+    if (!layout) {
+        return false;
+    }
+    BOOL trailing = FALSE;
+    BOOL inside = FALSE;
+    DWRITE_HIT_TEST_METRICS m{};
+    const HRESULT hr = layout->HitTestPoint(x, y, &trailing, &inside, &m);
+    if (FAILED(hr)) {
+        HH_LOG_WARN(kLog, L"HitTestPoint failed: 0x{:08X}", static_cast<unsigned>(hr));
+        return false;
+    }
+    position = static_cast<size_t>(m.textPosition) + (trailing ? static_cast<size_t>(m.length) : 0);
+    return true;
+}
+
+/**
+ * @brief HitTestTextRange: one rectangle per glyph run of the range.
+ */
+bool TextCache::rangeRects(const TextLayoutRef& layout, size_t pos, size_t length, std::vector<Rect>& out) {
+    out.clear();
+    if (!layout || length == 0) {
+        return false;
+    }
+    UINT32 count = 0;
+    HRESULT hr = layout->HitTestTextRange(static_cast<UINT32>(pos), static_cast<UINT32>(length), 0.0f, 0.0f, nullptr, 0, &count);
+    if ((hr != E_NOT_SUFFICIENT_BUFFER && FAILED(hr)) || count == 0) {
+        return false;
+    }
+    std::vector<DWRITE_HIT_TEST_METRICS> runs(count);
+    hr = layout->HitTestTextRange(static_cast<UINT32>(pos), static_cast<UINT32>(length), 0.0f, 0.0f, runs.data(), count, &count);
+    if (FAILED(hr)) {
+        return false;
+    }
+    for (UINT32 i = 0; i < count && i < runs.size(); ++i) {
+        const DWRITE_HIT_TEST_METRICS& r = runs[i];
+        out.push_back({r.left, r.top, std::max(0.0f, r.width), std::max(0.0f, r.height)});
+    }
+    return true;
 }
 
 } // namespace hh::ui

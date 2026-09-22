@@ -11,6 +11,7 @@
 
 #include "core/Logger.h"
 #include "platform/Time.h"
+#include "ui/core/SystemMetrics.h"
 #include "ui/core/RootView.h"
 #include "ui/gfx/TextMeasure.h"
 #include "ui/theme/Theme.h"
@@ -98,24 +99,6 @@ float estimatedAdvance(const std::wstring& text, const TextStyle& style) {
     }
     const float w = measureTextShared(text, style).w;
     return std::max(1.0f, w / static_cast<float>(text.size()));
-}
-
-/**
- * @brief X of a caret position inside a layout (0 on failure).
- */
-float layoutCaretX(IDWriteTextLayout* layout, size_t pos) {
-    if (!layout) {
-        return 0.0f;
-    }
-    FLOAT x = 0.0f;
-    FLOAT y = 0.0f;
-    DWRITE_HIT_TEST_METRICS m{};
-    const HRESULT hr = layout->HitTestTextPosition(static_cast<UINT32>(pos), FALSE, &x, &y, &m);
-    if (FAILED(hr)) {
-        HH_LOG_WARN(kLog, L"HitTestTextPosition({}) failed: 0x{:08X}", pos, static_cast<unsigned>(hr));
-        return 0.0f;
-    }
-    return x;
 }
 
 /**
@@ -260,16 +243,11 @@ size_t TextField::hitTestPosition(float x) {
     if (TextCache* cache = usableCache()) {
         auto layout = cache->layout(text_, style, 0.0f, Trimming::None, 1);
         if (layout) {
-            BOOL trailing = FALSE;
-            BOOL inside = FALSE;
-            DWRITE_HIT_TEST_METRICS m{};
             const float lh = lineMetricsShared(style).lineHeight;
-            const HRESULT hr = layout->HitTestPoint(x, lh * 0.5f, &trailing, &inside, &m);
-            if (SUCCEEDED(hr)) {
-                const size_t pos = static_cast<size_t>(m.textPosition) + (trailing ? static_cast<size_t>(m.length) : 0);
+            size_t pos = 0;
+            if (TextCache::hitTest(layout, x, lh * 0.5f, pos)) {
                 return std::min(pos, text_.size());
             }
-            HH_LOG_WARN(kLog, L"HitTestPoint failed: 0x{:08X}", static_cast<unsigned>(hr));
         }
     }
 
@@ -293,7 +271,7 @@ float TextField::caretX(size_t pos) {
     if (TextCache* cache = usableCache()) {
         auto layout = cache->layout(text_, style, 0.0f, Trimming::None, 1);
         if (layout) {
-            return layoutCaretX(layout.Get(), pos);
+            return TextCache::caretX(layout, pos);
         }
     }
 
@@ -651,9 +629,9 @@ void TextField::paintSelf(Canvas& c) {
         auto layout = c.text().layout(text_, style, 0.0f, Trimming::None, 1);
         float lh = lineMetricsShared(style).lineHeight;
         if (layout) {
-            DWRITE_TEXT_METRICS m{};
-            if (SUCCEEDED(layout->GetMetrics(&m)) && m.height > 0.0f) {
-                lh = m.height;
+            const Size laid = TextCache::layoutSize(layout);
+            if (laid.h > 0.0f) {
+                lh = laid.h;
             }
         }
         const Point origin{tr.x - scrollX_, tr.y + (tr.h - lh) * 0.5f};
@@ -666,19 +644,13 @@ void TextField::paintSelf(Canvas& c) {
             const size_t hi = std::min(std::max(caret_, anchor_), text_.size());
             bool painted = false;
             if (layout && hi > lo) {
-                // Ask DirectWrite for the exact glyph-run rectangles.
-                UINT32 count = 0;
-                HRESULT hr = layout->HitTestTextRange(static_cast<UINT32>(lo), static_cast<UINT32>(hi - lo), origin.x, origin.y, nullptr, 0, &count);
-                if ((hr == E_NOT_SUFFICIENT_BUFFER || SUCCEEDED(hr)) && count > 0) {
-                    std::vector<DWRITE_HIT_TEST_METRICS> runs(count);
-                    hr = layout->HitTestTextRange(static_cast<UINT32>(lo), static_cast<UINT32>(hi - lo), origin.x, origin.y, runs.data(), count, &count);
-                    if (SUCCEEDED(hr)) {
-                        for (UINT32 i = 0; i < count && i < runs.size(); ++i) {
-                            const DWRITE_HIT_TEST_METRICS& r = runs[i];
-                            c.fillRect({r.left, r.top, std::max(0.0f, r.width), std::max(0.0f, r.height)}, sel);
-                        }
-                        painted = true;
+                // Ask the text engine for the exact glyph-run rectangles.
+                std::vector<Rect> runs;
+                if (TextCache::rangeRects(layout, lo, hi - lo, runs)) {
+                    for (const Rect& r : runs) {
+                        c.fillRect(r.offset(origin.x, origin.y), sel);
                     }
+                    painted = true;
                 }
             }
             if (!painted && hi > lo) {
@@ -691,14 +663,14 @@ void TextField::paintSelf(Canvas& c) {
 
         // The text itself.
         if (layout) {
-            c.drawTextLayout(layout.Get(), origin, textColour);
+            c.drawTextLayout(layout, origin, textColour);
         } else {
             c.drawText(text_, style, {origin.x, tr.y, 1.0e6f, tr.h}, textColour, HAlign::Left, VAlign::Center, Trimming::None, 1);
         }
 
         // Caret: 1 dip (at least one pixel), only while focused in the active window.
         if (isFocused && windowActive && caretVisible_ && !readOnly_ && enabled()) {
-            const float cx = layout ? layoutCaretX(layout.Get(), caret_) : caretX(caret_);
+            const float cx = layout ? TextCache::caretX(layout, caret_) : caretX(caret_);
             const float x = c.scale().snap(origin.x + cx);
             const float cw = std::max(1.0f, hairline);
             c.fillRect({x, origin.y, cw, lh}, t.labelPrimary);
@@ -1034,12 +1006,12 @@ void TextField::onFocusChanged(bool focused) {
         textAtFocus_ = text_;
         dirty_ = false;
 
-        // Blink rate from the system (INFINITE = never blink, 0 = query failed).
-        const UINT ms = ::GetCaretBlinkTime();
-        if (ms == INFINITE) {
+        // Blink rate from the system (0 = never blink, negative = query failed).
+        const int ms = system::caretBlinkMs();
+        if (ms == 0) {
             blinkPeriod_ = 0.0;
-        } else if (ms == 0) {
-            HH_LOG_DEBUG(kLog, L"GetCaretBlinkTime failed ({}); using default", ::GetLastError());
+        } else if (ms < 0) {
+            HH_LOG_DEBUG(kLog, L"caret blink time unavailable; using default");
             blinkPeriod_ = kDefaultBlink;
         } else {
             blinkPeriod_ = static_cast<double>(ms) / 1000.0;

@@ -139,8 +139,9 @@ file(GLOB_RECURSE HH_UI_SOURCES CONFIGURE_DEPENDS
     ${HH_SRC}/ame/*.cpp ${HH_SRC}/ame/*.mm ${HH_SRC}/ame/*.h)
 
 # Windows-only units: Direct2D/DirectComposition backend, Win32 windows, HWND docking.
+# By convention a shared folder's Windows-only units end in "Win.cpp".
 set(HH_WINDOWS_ONLY_UI_REGEX
-    "/ui/window/|/ui/gfx/(Canvas|GraphicsDevice|SwapChainSurface|TextCache)\\.cpp$|/ui/app/ShellServicesWin\\.cpp$|/ame/(AmeProcess|DockController|PanelWindowLocator)\\.cpp$")
+    "/ui/window/|/ui/gfx/(Canvas|GraphicsDevice|SwapChainSurface|TextCache)\\.cpp$|Win\\.cpp$|/ame/(AmeProcess|DockController|PanelWindowLocator)\\.cpp$")
 
 if(HH_WINDOWS)
     list(FILTER HH_UI_SOURCES EXCLUDE REGEX "/mac/")

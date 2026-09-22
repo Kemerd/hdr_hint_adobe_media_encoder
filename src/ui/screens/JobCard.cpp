@@ -4,6 +4,7 @@
 #include "ui/screens/JobCard.h"
 
 #include "core/Logger.h"
+#include "platform/Terms.h"
 #include "ui/controls/Button.h"
 #include "ui/controls/Label.h"
 #include "ui/controls/PopupButton.h"
@@ -438,7 +439,8 @@ void JobCard::applyActions(const JobView& view, [[maybe_unused]] bool force) {
     // Reveal is always present; it only enables once something exists on disk.
     if (reveal_) {
         setEnabledIf(reveal_, view.canReveal);
-        reveal_->setTooltipText(view.canRevealHint ? L"Show the hint file in Explorer" : L"Show the export in Explorer");
+        reveal_->setTooltipText(std::wstring(view.canRevealHint ? L"Show the hint file in " : L"Show the export in ") +
+                                platform::terms::kFileBrowser);
     }
     setEnabledIf(remove_, view.canRemove);
 

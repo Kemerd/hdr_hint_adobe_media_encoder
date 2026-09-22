@@ -35,7 +35,9 @@ namespace {
 /// FILETIME ticks per unit.
 constexpr uint64_t kTicksPerMillisecond = 10'000ull;
 constexpr uint64_t kTicksPerSecond = 10'000'000ull;
+#if defined(_WIN32)
 constexpr uint64_t kTicksPerMinute = 600'000'000ull;
+#endif
 constexpr uint64_t kTicksPerDay = 864'000'000'000ull;
 
 /// 1970-01-01 expressed as FILETIME ticks.

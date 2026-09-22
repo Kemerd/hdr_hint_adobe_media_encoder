@@ -35,6 +35,7 @@
 #include "platform/KnownFolders.h"
 #include "platform/NamedPipe.h"
 #include "platform/RecycleBin.h"
+#include "platform/Terms.h"
 #include "platform/Time.h"
 #include "platform/Utf.h"
 #include "platform/Win.h"
@@ -1778,7 +1779,8 @@ void Engine::maybeRecycle(Job& job) {
     job.recycle = RecycleStatus::Pending;
     job.recycleMessage.clear();
     store_.touch();
-    toast(ToastRequest::Tone::Warning, L"Move " + job.displayName() + L" to the Recycle Bin?", job.id, L"Recycle");
+    toast(ToastRequest::Tone::Warning, L"Move " + job.displayName() + L" to the " + platform::terms::kTrash + L"?", job.id,
+          L"Recycle");
     notifyJobs();
 }
 
@@ -1851,7 +1853,7 @@ void Engine::recycleJob(JobId id) {
     store_.touch();
     HH_LOG_INFO(kLog, L"job {} recycle: {} ({})", id, toString(job->recycle), job->recycleMessage);
     if (job->recycle == RecycleStatus::Recycled) {
-        toast(ToastRequest::Tone::Info, L"Moved " + job->displayName() + L" to the Recycle Bin", id);
+        toast(ToastRequest::Tone::Info, L"Moved " + job->displayName() + L" to the " + platform::terms::kTrash, id);
     } else {
         toast(ToastRequest::Tone::Warning, L"Original kept: " + job->recycleMessage, id);
     }
@@ -2057,7 +2059,8 @@ void Engine::revealJob(JobId id, bool hintFile) {
     }
     if (!platform::revealInExplorer(target)) {
         HH_LOG_WARN(kLog, L"could not reveal {}", target);
-        toast(ToastRequest::Tone::Warning, L"Could not open Explorer for " + path::fileName(target), id);
+        toast(ToastRequest::Tone::Warning, std::wstring(L"Could not open ") + platform::terms::kFileBrowser + L" for " +
+                                               path::fileName(target), id);
     }
 }
 

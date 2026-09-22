@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
+#include "ame/DockControl.h"
 #include "ame/PanelWindowLocator.h"
 #include "platform/Win.h"
 #include "ui/window/WindowHost.h"
@@ -13,15 +14,13 @@
 
 namespace hh::ame {
 
-enum class DockState { Undocked, Searching, Docked, Suspended, Picking };
-
 /**
  * @brief Dock/undock state machine + WinEvent tracking.
  *
  * All methods run on the UI thread. WinEvent callbacks only post
  * WM_HH_DOCK_TICK to the main window; the window forwards to onDockTick().
  */
-class DockController {
+class DockController final : public IDockControl {
 public:
     explicit DockController(ui::WindowHost& window);
     ~DockController();
@@ -32,7 +31,8 @@ public:
     void setEnabled(bool enabled);
     [[nodiscard]] bool enabled() const noexcept { return enabled_; }
     [[nodiscard]] DockState state() const noexcept { return state_; }
-    [[nodiscard]] bool docked() const noexcept { return state_ == DockState::Docked; }
+    [[nodiscard]] bool docked() const noexcept override { return state_ == DockState::Docked; }
+    [[nodiscard]] bool supported() const noexcept override { return true; }
 
     // ---- panel bridge inputs ---------------------------------------------
     /// "hello" from the panel: renderer pid + skin colour.
@@ -48,8 +48,8 @@ public:
     /// Workspace changed: re-locate the panel windows.
     void onWorkspaceChanged();
     /// User pressed Dock / Undock (panel or app).
-    void userDock();
-    void userUndock();
+    void userDock() override;
+    void userUndock() override;
     [[nodiscard]] bool userUndocked() const noexcept { return userUndocked_; }
 
     // ---- pick-a-panel docking (no CEP needed) --------------------------------
@@ -82,7 +82,6 @@ public:
 
     /// Panel background as a UI colour (from hello/theme events).
     [[nodiscard]] std::optional<COLORREF> panelBackground() const noexcept { return panelBackground_; }
-    std::function<void(DockState)> onStateChanged;
     std::function<void(const std::wstring&)> onMessage;   ///< toasts ("Docked inside Media Encoder")
 
 private:

@@ -333,7 +333,7 @@ void ScrollView::paint(Canvas& c) {
     if (faded) {
         c.pushOpacity(op);
     }
-    c.pushTransform(D2D1::Matrix3x2F::Translation(frame_.x, frame_.y));
+    c.pushTransform(Transform2D::translation(frame_.x, frame_.y));
 
     paintSelf(c);
 
@@ -346,7 +346,7 @@ void ScrollView::paint(Canvas& c) {
     // pixels so glyphs stay crisp while the view moves.
     const float shown = c.scale().snap(displayedOffset());
     c.pushClip(bounds());
-    c.pushTransform(D2D1::Matrix3x2F::Translation(0.0f, -shown));
+    c.pushTransform(Transform2D::translation(0.0f, -shown));
     for (const auto& child : children()) {
         if (child && child->visible()) {
             child->paint(c);

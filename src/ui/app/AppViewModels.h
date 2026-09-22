@@ -10,11 +10,12 @@
 // ---------------------------------------------------------------------------
 #pragma once
 
-#include "ame/DockController.h"
+#include "ame/DockControl.h"
 #include "core/Engine.h"
 #include "core/JobModel.h"
 #include "core/Settings.h"
 #include "platform/Win.h"
+#include "ui/app/ShellServices.h"
 #include "ui/screens/ViewModels.h"
 #include "ui/theme/ThemeManager.h"
 
@@ -26,19 +27,8 @@
 
 namespace hh::ui {
 
-/**
- * @brief Puts text on the clipboard as CF_UNICODETEXT.
- * @param owner  window that becomes the clipboard owner (may be null)
- * @param text   the text; an empty string clears the clipboard
- * @return true when the clipboard now holds @p text
- */
-bool copyTextToClipboard(HWND owner, std::wstring_view text);
-
-/**
- * @brief "1.0.0" read from the executable's VERSIONINFO block (falls back to
- *        the compiled-in version when the block is missing).
- */
-std::wstring appVersionString();
+// copyTextToClipboard(), appVersionString() and showPathPicker() live in
+// ShellServices.h (one implementation per platform).
 
 // ===========================================================================
 // Queue
@@ -51,9 +41,9 @@ class AppQueueViewModel final : public IQueueViewModel {
 public:
     /**
      * @param engine           the engine (must outlive this object)
-     * @param ownerForDialogs  HWND used as the clipboard owner
+     * @param ownerForDialogs  window used as the clipboard / dialog owner
      */
-    AppQueueViewModel(hh::Engine& engine, HWND ownerForDialogs);
+    AppQueueViewModel(hh::Engine& engine, NativeWindowHandle ownerForDialogs);
     ~AppQueueViewModel() override;
     AppQueueViewModel(const AppQueueViewModel&) = delete;
     AppQueueViewModel& operator=(const AppQueueViewModel&) = delete;
@@ -94,7 +84,7 @@ private:
     void notifyUser(const std::wstring& message, bool ok);
 
     hh::Engine& engine_;
-    HWND owner_ = nullptr;
+    NativeWindowHandle owner_ = nullptr;
     /// Shared liveness token: the engine callback checks it before touching this.
     std::shared_ptr<bool> alive_;
     /// bind() ran already (a second call would chain us twice).
@@ -114,9 +104,9 @@ public:
      * @param engine    the engine (re-applies settings to its workers)
      * @param settings  the live settings object the engine reads
      * @param themes    theme manager for appearance / accent / transparency
-     * @param owner     HWND that owns the file dialogs
+     * @param owner     window that owns the file dialogs
      */
-    AppSettingsViewModel(hh::Engine& engine, hh::Settings& settings, ThemeManager& themes, HWND owner);
+    AppSettingsViewModel(hh::Engine& engine, hh::Settings& settings, ThemeManager& themes, NativeWindowHandle owner);
     ~AppSettingsViewModel() override = default;
     AppSettingsViewModel(const AppSettingsViewModel&) = delete;
     AppSettingsViewModel& operator=(const AppSettingsViewModel&) = delete;
@@ -178,7 +168,7 @@ private:
     hh::Engine& engine_;
     hh::Settings& settings_;
     ThemeManager& themes_;
-    HWND owner_ = nullptr;
+    NativeWindowHandle owner_ = nullptr;
 };
 
 // ===========================================================================
@@ -190,7 +180,7 @@ private:
  */
 class AppLinkViewModel final : public ILinkViewModel {
 public:
-    AppLinkViewModel(hh::Engine& engine, hh::ame::DockController& dock);
+    AppLinkViewModel(hh::Engine& engine, hh::ame::IDockControl& dock);
     ~AppLinkViewModel() override;
     AppLinkViewModel(const AppLinkViewModel&) = delete;
     AppLinkViewModel& operator=(const AppLinkViewModel&) = delete;
@@ -205,7 +195,7 @@ private:
     void notify();
 
     hh::Engine& engine_;
-    hh::ame::DockController& dock_;
+    hh::ame::IDockControl& dock_;
     std::shared_ptr<bool> alive_;
     /// bind() ran already (a second call would chain us twice).
     bool bound_ = false;
@@ -221,7 +211,7 @@ private:
 class AppGuideViewModel final : public IGuideViewModel {
 public:
     /// @param owner HWND used as the clipboard owner
-    explicit AppGuideViewModel(HWND owner);
+    explicit AppGuideViewModel(NativeWindowHandle owner);
     ~AppGuideViewModel() override = default;
 
     [[nodiscard]] std::wstring markdown() const override;
@@ -238,7 +228,7 @@ public:
 private:
     void notifyUser(const std::wstring& message, bool ok);
 
-    HWND owner_ = nullptr;
+    NativeWindowHandle owner_ = nullptr;
     const ISettingsViewModel* settings_ = nullptr;
     /// The markdown is immutable for the life of the process; decode it once.
     mutable std::wstring markdownCache_;

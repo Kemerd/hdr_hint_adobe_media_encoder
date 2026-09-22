@@ -532,7 +532,7 @@ void Widget::paint(Canvas& c) {
 
     const bool faded = op < 1.0f;
     if (faded) { c.pushOpacity(op); }
-    c.pushTransform(D2D1::Matrix3x2F::Translation(frame_.x, frame_.y));
+    c.pushTransform(Transform2D::translation(frame_.x, frame_.y));
 
     paintSelf(c);
 

@@ -9,6 +9,7 @@
 
 #include "core/Logger.h"
 #include "platform/Time.h"
+#include "platform/Utf.h"
 #include "ui/core/RootView.h"
 #include "ui/gfx/TextMeasure.h"
 #include "ui/theme/Theme.h"
@@ -67,8 +68,8 @@ bool startsWithNoCase(const std::wstring& label, const std::wstring& prefix) {
     if (prefix.empty() || label.size() < prefix.size()) {
         return false;
     }
-    const int n = static_cast<int>(prefix.size());
-    return ::CompareStringOrdinal(label.c_str(), n, prefix.c_str(), n, TRUE) == CSTR_EQUAL;
+    // Ordinal, case-insensitive (CompareStringOrdinal on Windows).
+    return platform::istartsWith(label, prefix);
 }
 
 /**
@@ -254,7 +255,7 @@ void PopupMenu::paintSelf(Canvas& c) {
     if (animating) {
         c.pushOpacity(open);
         const float s = kOpenScaleFrom + (1.0f - kOpenScaleFrom) * open;
-        c.pushTransform(D2D1::Matrix3x2F::Scale(s, s, D2D1::Point2F(0.0f, 0.0f)));
+        c.pushTransform(Transform2D::scale(s, s, Point(0.0f, 0.0f)));
     }
 
     // Rows scroll under the padding, so clip to our bounds.
