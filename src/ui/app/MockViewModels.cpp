@@ -91,6 +91,8 @@ std::vector<Choice> mockLutChoices() {
     for (const std::wstring& lut : mockLutPaths()) {
         out.push_back(Choice{path::fileName(lut), lut, path::parent(lut)});
     }
+    // Last entry: reach any .cube on disk, not just the folder and recents.
+    out.push_back(Choice{L"Choose a .cube file...", kBrowseLutValue, std::wstring()});
     return out;
 }
 
@@ -535,6 +537,11 @@ void MockQueueViewModel::setLut(JobId id, const std::wstring& lutPath) {
     notify();
 }
 
+/// The mock has no shell dialogs; pretend the user picked a file off D:.
+void MockQueueViewModel::browseLut(JobId id) {
+    setLut(id, L"D:\\LUTs\\Picked_From_Disk.cube");
+}
+
 void MockQueueViewModel::setAttachLut(JobId id, bool attach) {
     JobView* row = find(id, L"setAttachLut");
     if (!row) {
@@ -702,6 +709,11 @@ void MockSettingsViewModel::setLutFolder(const std::wstring& path) {
 
 void MockSettingsViewModel::browseLutFolder() {
     setLutFolder(L"D:\\LUTs");
+}
+
+/// The mock has no shell dialogs; pretend the user picked a file off D:.
+void MockSettingsViewModel::browseLut(TransferKind t) {
+    setDefaultLut(t, L"D:\\LUTs\\Picked_From_Disk.cube");
 }
 
 void MockSettingsViewModel::setDefaultLut(TransferKind t, const std::wstring& path) {

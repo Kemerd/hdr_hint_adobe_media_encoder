@@ -71,6 +71,7 @@ public:
     void reveal(JobId id, bool hintFile) override;
     void setPreset(JobId id, const std::wstring& presetId) override;
     void setLut(JobId id, const std::wstring& lutPath) override;
+    void browseLut(JobId id) override;
     void setAttachLut(JobId id, bool attach) override;
     void copyCommand(JobId id) override;
     [[nodiscard]] bool autoProcess() const override;
@@ -128,6 +129,7 @@ public:
     void setLutFolder(const std::wstring& path) override;
     void browseLutFolder() override;
     void setDefaultLut(TransferKind t, const std::wstring& path) override;
+    void browseLut(TransferKind t) override;
     void setDefaultPreset(TransferKind t, const std::wstring& presetId) override;
     void setSuffix(const std::wstring& suffix) override;
     void setAttachLutByDefault(bool on) override;

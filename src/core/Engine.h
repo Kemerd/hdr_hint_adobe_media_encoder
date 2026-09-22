@@ -82,6 +82,9 @@ public:
     [[nodiscard]] std::vector<std::wstring> watchFolders() const;
 
     // ---- commands -----------------------------------------------------------
+    /// Moves @p lutPath to the front of the recents, so every LUT chooser
+    /// lists it. Used when the user picks a .cube from outside the LUT folder.
+    void rememberLut(const std::wstring& lutPath);
     void runJob(JobId id);                       ///< Ready/Held/Failed/Skipped -> dispatch (re-probes when needed)
     void holdJob(JobId id);                      ///< Ready -> Held (or sets the hold flag while Encoding)
     void resumeJob(JobId id);                    ///< clears hold; dispatches when Ready
@@ -153,7 +156,6 @@ private:
     void inferTransfer(Job& job, TransferKind kind, const wchar_t* source);
     void registerFolder(const std::wstring& folder);
     void refreshLuts();
-    void rememberLut(const std::wstring& lutPath);
     void cepStartedPathsEraseFor(JobId id);
     void notifyJobs();
     void notifyLink();

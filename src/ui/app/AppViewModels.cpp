@@ -221,6 +221,13 @@ ThemeMode themeModeFor(int index) noexcept {
 
 } // namespace
 
+// The shell file pickers live further down, next to the settings view model
+// that uses them most; both view models need them, so declare them here.
+static std::wstring showPathPicker(HWND owner, bool pickFolder, const wchar_t* title,
+                                   const std::wstring& startFolder, const wchar_t* filterLabel,
+                                   const wchar_t* filterPattern);
+static std::wstring pickCubeFile(HWND owner, const std::wstring& startFolder);
+
 // ===========================================================================
 // Free helpers
 // ===========================================================================
@@ -511,6 +518,8 @@ std::vector<Choice> AppQueueViewModel::lutChoices() const {
         c.subtitle = path::parent(lut);
         out.push_back(std::move(c));
     }
+    // Last entry: reach any .cube on disk, not just the folder and recents.
+    out.push_back(Choice{L"Choose a .cube file...", kBrowseLutValue, std::wstring()});
     return out;
 }
 
@@ -587,6 +596,41 @@ void AppQueueViewModel::setLut(JobId id, const std::wstring& lutPath) {
         return;
     }
     engine_.setJobOverrides(id, o);
+}
+
+/**
+ * @brief Picks a .cube from disk and applies it to one job.
+ *
+ * Starts in the folder of whatever the job already uses, so replacing a LUT
+ * with its neighbour is two clicks. The engine remembers the file, which puts
+ * it in every chooser from now on.
+ */
+void AppQueueViewModel::browseLut(JobId id) {
+    const std::optional<Job> job = engine_.job(id);
+    if (!job) {
+        HH_LOG_WARN(kLog, L"browseLut: unknown job {}", id);
+        return;
+    }
+    // Start next to the LUT this job currently resolves to, else the folder.
+    std::wstring start;
+    if (job->overrides.lutPath && !job->overrides.lutPath->empty()) {
+        start = path::parent(engine_.settings().expand(*job->overrides.lutPath));
+    }
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = engine_.settings().expand(engine_.settings().lutFolder);
+    }
+    const std::wstring picked = pickCubeFile(owner_, start);
+    if (picked.empty()) {
+        // Cancelled: re-render so the card's pop-up leaves the "Choose..."
+        // entry and shows the LUT the job actually uses.
+        notify();
+        return;
+    }
+    HH_LOG_INFO(kLog, L"job {} LUT picked from disk: '{}'", id, picked);
+    // Remembering it first means the pop-up already lists the file when the
+    // override lands and the card refreshes.
+    engine_.rememberLut(picked);
+    setLut(id, picked);
 }
 
 void AppQueueViewModel::setAttachLut(JobId id, bool attach) {
@@ -778,13 +822,22 @@ std::vector<Choice> AppSettingsViewModel::lutChoices() const {
         c.subtitle = path::parent(lut);
         out.push_back(std::move(c));
     }
+    // Last entry: reach any .cube on disk, not just the folder and recents.
+    out.push_back(Choice{L"Choose a .cube file...", kBrowseLutValue, std::wstring()});
     return out;
 }
 
 // ---- file dialogs --------------------------------------------------------
 
-std::wstring AppSettingsViewModel::pickPath(bool pickFolder, const wchar_t* title, const std::wstring& startFolder,
-                                            const wchar_t* filterLabel, const wchar_t* filterPattern) const {
+/**
+ * @brief Shows an IFileOpenDialog and returns the chosen path.
+ *
+ * Shared by both view models: the queue needs the same .cube picker the
+ * settings screen uses, so the dialog code lives here rather than on one of
+ * them. Returns an empty string when the user cancels or the shell refuses.
+ */
+static std::wstring showPathPicker(HWND owner, bool pickFolder, const wchar_t* title, const std::wstring& startFolder,
+                            const wchar_t* filterLabel, const wchar_t* filterPattern) {
     // COM is initialised by the app on the UI thread; a failure here is logged, not fatal.
     platform::ComPtr<IFileOpenDialog> dialog;
     HRESULT hr = ::CoCreateInstance(__uuidof(FileOpenDialog), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&dialog));
@@ -835,7 +888,7 @@ std::wstring AppSettingsViewModel::pickPath(bool pickFolder, const wchar_t* titl
     }
 
     // Modal on the owner; cancel is the normal exit, not an error.
-    hr = dialog->Show(owner_);
+    hr = dialog->Show(owner);
     if (hr == HRESULT_FROM_WIN32(ERROR_CANCELLED)) {
         return {};
     }
@@ -859,6 +912,22 @@ std::wstring AppSettingsViewModel::pickPath(bool pickFolder, const wchar_t* titl
     // The shell allocated the string; free it once copied.
     const platform::CoTaskMemPtr<wchar_t> holder(raw);
     return std::wstring(raw);
+}
+
+/**
+ * @brief Picks a .cube file, starting wherever the current value points.
+ *
+ * The same dialog for the settings defaults and for a single job's LUT
+ * override, so a LUT that lives nowhere near the configured LUT folder is
+ * always one click away.
+ */
+static std::wstring pickCubeFile(HWND owner, const std::wstring& startFolder) {
+    return showPathPicker(owner, false, L"Choose a LUT (.cube)", startFolder, L"Cube LUT (*.cube)", L"*.cube");
+}
+
+std::wstring AppSettingsViewModel::pickPath(bool pickFolder, const wchar_t* title, const std::wstring& startFolder,
+                                            const wchar_t* filterLabel, const wchar_t* filterPattern) const {
+    return showPathPicker(owner_, pickFolder, title, startFolder, filterLabel, filterPattern);
 }
 
 void AppSettingsViewModel::browseMkvmerge() {
@@ -949,6 +1018,40 @@ void AppSettingsViewModel::setDefaultLut(TransferKind t, const std::wstring& pat
     }
     HH_LOG_INFO(kLog, L"default LUT for {} set to '{}'", toString(t), trimmed);
     commit();
+}
+
+/**
+ * @brief Picks a .cube from disk and stores it as the default for a transfer.
+ *
+ * The chooser only lists what the LUT folder and the recents hold, so this is
+ * the way to point at a LUT that lives anywhere else.
+ */
+void AppSettingsViewModel::browseLut(TransferKind t) {
+    // Start where the current default points, else in the configured folder.
+    std::wstring start;
+    const std::wstring current = settings_.defaultLutFor(static_cast<int>(t));
+    if (!current.empty()) {
+        start = path::parent(current);
+    }
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = settings_.expand(settings_.lutFolder);
+    }
+    if (start.empty() || !platform::isDirectory(start)) {
+        start = platform::exeDirectory();
+    }
+    const std::wstring picked = pickCubeFile(owner_, start);
+    if (picked.empty()) {
+        // Cancelled: the pop-up is still showing the "Choose..." entry, so the
+        // screen has to re-sync it back to the configured LUT.
+        notify();
+        return;
+    }
+    // Remember it so it appears in this chooser and in every job's LUT list.
+    engine_.rememberLut(picked);
+    setDefaultLut(t, picked);
+    // setDefaultLut bails out when the value is unchanged, but the recents
+    // list just moved, so the screen still needs a repaint.
+    notify();
 }
 
 void AppSettingsViewModel::setDefaultPreset(TransferKind t, const std::wstring& presetId) {

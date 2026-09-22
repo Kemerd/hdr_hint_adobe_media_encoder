@@ -296,10 +296,22 @@ void SettingsScreen::buildDefaults()
     if (!group) return;
 
     // Per-transfer default LUT and preset.
-    lutPq_ = addPopupRow(group, L"Default LUT (PQ)",
-                         [this](const std::wstring& v) { vm_.setDefaultLut(TransferKind::PQ, v); });
-    lutHlg_ = addPopupRow(group, L"Default LUT (HLG)",
-                          [this](const std::wstring& v) { vm_.setDefaultLut(TransferKind::HLG, v); });
+    // The last item in both lists is "Choose a .cube file...", which opens a
+    // picker rather than naming a LUT; browseLut() writes the real path.
+    lutPq_ = addPopupRow(group, L"Default LUT (PQ)", [this](const std::wstring& v) {
+        if (v == kBrowseLutValue) {
+            vm_.browseLut(TransferKind::PQ);
+            return;
+        }
+        vm_.setDefaultLut(TransferKind::PQ, v);
+    });
+    lutHlg_ = addPopupRow(group, L"Default LUT (HLG)", [this](const std::wstring& v) {
+        if (v == kBrowseLutValue) {
+            vm_.browseLut(TransferKind::HLG);
+            return;
+        }
+        vm_.setDefaultLut(TransferKind::HLG, v);
+    });
     presetPq_ = addPopupRow(group, L"PQ preset",
                             [this](const std::wstring& v) { vm_.setDefaultPreset(TransferKind::PQ, v); });
     presetHlg_ = addPopupRow(group, L"HLG preset",

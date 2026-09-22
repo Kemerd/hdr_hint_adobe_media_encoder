@@ -249,6 +249,13 @@ void JobCard::build() {
             lut_->layoutParams().flexGrow = 1.0f;
             lut_->onChanged = [this](int) {
                 if (updating_ || !lut_) { return; }
+                // The last entry is not a path: it opens a file picker. The
+                // view model re-selects whatever the user chose, so the
+                // sentinel is never stored on the job.
+                if (lut_->selectedValue() == kBrowseLutValue) {
+                    vm_.browseLut(id_);
+                    return;
+                }
                 vm_.setLut(id_, lut_->selectedValue());
             };
         }
@@ -409,6 +416,8 @@ void JobCard::applyPlan(const JobView& view, bool force) {
     if (lut_) {
         const std::vector<Choice> choices = vm_.lutChoices();
         if (force || !sameItems(lut_->items(), choices)) { lut_->setItems(toItems(choices)); }
+        // The third test also covers a cancelled picker: the pop-up is left on
+        // the "Choose a .cube file..." entry while the job never changed.
         if (force || view.lutPath != view_.lutPath || lut_->selectedValue() != view.lutPath) {
             // An empty path maps to the "None" entry (empty value) when present.
             if (!lut_->setSelectedValue(view.lutPath)) { lut_->setSelectedIndex(-1); }
