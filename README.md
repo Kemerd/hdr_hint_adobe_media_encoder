@@ -93,7 +93,7 @@ make test          # configure, build Release, run the unit tests
 | `make app` / `make cli` | only `HdrHint` / only `hdrhint_cli` |
 | `make run` | build and start the app |
 | `make screenshots` | every tab, dark and light, rendered offscreen to `build/screenshots/` |
-| `make package` | CPack: `HdrHint-<ver>.dmg` on macOS, `HdrHint-<ver>-win64.zip` on Windows |
+| `make package` | CPack: `HdrHint-<ver>-macOS.dmg` on macOS, `HdrHint-<ver>-win64.zip` on Windows |
 | `make install PREFIX=…` | `cmake --install` into a folder (default `./dist`) |
 | `make panel` / `make unpanel` | install / remove the Media Encoder panel for this user |
 | `make icon` | regenerate `resources/macos/HdrHint.icns` (needs Pillow) |
@@ -189,6 +189,14 @@ log. Running it with no panel at all is fine too: it sits in the tray and watche
 not offer across apps, so the Mac build is a floating window (optionally always on top) plus a
 menu bar item, and the dock switches are hidden. Everything else is identical: the log
 tailer, the watch folders, the queue, the presets, the panel's launch and commands.
+
+<p align="center">
+  <img src="docs/img/mac-queue-dark.png" width="40%" alt="HDR Hint on macOS, queue, dark">
+  &nbsp;&nbsp;
+  <img src="docs/img/mac-settings-light.png" width="40%" alt="HDR Hint on macOS, settings, light">
+</p>
+<p align="center"><sub>macOS, rendered headless by CI (<code>make screenshots</code>). The gap left of
+the logo is where the window's own traffic lights sit.</sub></p>
 
 ## Export settings (the short version)
 

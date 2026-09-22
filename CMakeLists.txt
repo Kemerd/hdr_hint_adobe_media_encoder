@@ -252,7 +252,7 @@ add_test(NAME hdrhint_unit COMMAND hdrhint_tests)
 # Install / package
 #
 #   cmake --install build --prefix <dir>     app + cli + assets
-#   cpack --config build/CPackConfig.cmake   HdrHint-<ver>-win64.zip / HdrHint-<ver>.dmg
+#   cpack --config build/CPackConfig.cmake   HdrHint-<ver>-win64.zip / HdrHint-<ver>-macOS.dmg
 # ---------------------------------------------------------------------------
 if(HH_WINDOWS)
     if(HH_BUILD_APP)
@@ -269,6 +269,8 @@ else()
         install(TARGETS HdrHint BUNDLE DESTINATION .)
     endif()
     install(TARGETS hdrhint_cli RUNTIME DESTINATION bin)
+    # A bare binary resolves <exe> to its own folder: give it the LUTs there.
+    install(DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/luts DESTINATION bin)
     set(CPACK_GENERATOR DragNDrop)
     set(CPACK_DMG_VOLUME_NAME "HDR Hint")
     set(CPACK_DMG_FORMAT UDZO)
