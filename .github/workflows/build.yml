@@ -5,7 +5,8 @@
 #   windows  Visual Studio 2022 generator, Release, unit tests, CLI smoke test,
 #            zipped HdrHint.exe + hdrhint_cli.exe as an artifact
 #   macos    Ninja, Release, universal (arm64 + x86_64) HdrHint.app, unit tests,
-#            CLI smoke test, headless UI screenshots, HdrHint.dmg artifact
+#            CLI smoke test, the Makefile front end, headless UI screenshots,
+#            HdrHint.dmg artifact
 # ---------------------------------------------------------------------------
 name: build
 
@@ -77,31 +78,31 @@ jobs:
           build/hdrhint_cli --presets
           lipo -info build/hdrhint_cli
 
-      - name: UI screenshots (headless render)
-        if: hashFiles('src/app/mac/main.mm') != ''
+      - name: Makefile front end and shell scripts
         run: |
-          mkdir -p screenshots
-          APP="build/HdrHint.app/Contents/MacOS/HdrHint"
-          lipo -info "$APP"
-          for tab in 0 1 2; do
-            "$APP" --screenshot "screenshots/tab${tab}-dark.png" --tab $tab --dark --width 520 --height 720
-            "$APP" --screenshot "screenshots/tab${tab}-light.png" --tab $tab --light --width 520 --height 720
-          done
-          "$APP" --screenshot screenshots/queue-scenario1-dark.png --scenario 1 --tab 0 --dark --width 420 --height 720
-          ls -la screenshots
+          # Reuses the build above: the cache exists, so this is build + ctest.
+          make test
+          for script in scripts/*.sh; do bash -n "$script"; done
+          scripts/build.sh --help > /dev/null
+
+      - name: UI screenshots (headless render)
+        run: |
+          lipo -info build/HdrHint.app/Contents/MacOS/HdrHint
+          codesign --verify --deep --strict build/HdrHint.app
+          make screenshots
+          ls -la build/screenshots
 
       - uses: actions/upload-artifact@v4
-        if: hashFiles('src/app/mac/main.mm') != ''
+        if: always()
         with:
           name: HdrHint-macos-screenshots
-          path: screenshots/*.png
+          path: build/screenshots/*.png
+          if-no-files-found: warn
 
       - name: Package
-        if: hashFiles('src/app/mac/main.mm') != ''
         run: cpack --config build/CPackConfig.cmake -B build/package
 
       - uses: actions/upload-artifact@v4
-        if: hashFiles('src/app/mac/main.mm') != ''
         with:
           name: HdrHint-macos
           path: build/package/*.dmg

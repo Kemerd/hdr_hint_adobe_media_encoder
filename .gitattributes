@@ -1,0 +1,10 @@
+# Files that a POSIX shell or make reads must keep LF in every working tree
+# (a CRLF shebang or recipe line breaks them), including checkouts on Windows.
+*.sh text eol=lf
+Makefile text eol=lf
+*.plist.in text eol=lf
+
+# Binary assets.
+*.icns binary
+*.ico binary
+*.png binary

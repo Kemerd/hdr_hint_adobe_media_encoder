@@ -34,6 +34,8 @@ constexpr float kAccessoryGap = 12.0f;
 /// (a pop-up carrying a long file name) is squeezed instead of collapsing
 /// the label to an ellipsis, which is useless to read.
 constexpr float kMinTitleW = 96.0f;
+/// Largest share of the row a label may claim from a wide accessory.
+constexpr float kMaxTitleShare = 0.5f;
 /// Gap between the text and an accessory placed on its own line.
 constexpr float kAccessoryBelowGap = 8.0f;
 /// Gap between title and subtitle.
@@ -180,6 +182,25 @@ Widget* SettingsRow::setAccessory(std::unique_ptr<Widget> accessory) {
 }
 
 /**
+ * @brief Width the title column keeps when a side-by-side accessory is wide.
+ *
+ * A pop-up carrying a long file name must shrink (it ellipsizes its value)
+ * before a short label like "Default LUT (PQ)" is cut: the floor is the
+ * title's natural single-line width, bounded to [kMinTitleW, half the row].
+ */
+float SettingsRow::titleFloor(float innerW) {
+    const float cap = std::max(0.0f, innerW);
+    float natural = 0.0f;
+    if (title_ && title_->visible()) {
+        natural = std::max(0.0f, title_->measure(looseWidth(cap)).w);
+    }
+    // The label's own width, but never more than half the row (the control
+    // keeps the other half) and never less than the old fixed floor.
+    const float floorW = std::max(kMinTitleW, std::min(natural, cap * kMaxTitleShare));
+    return std::min(floorW, cap);
+}
+
+/**
  * @brief Measures the row: text column beside (or above) the accessory.
  *
  * The width comes from the parent; the height is the taller of the text
@@ -206,7 +227,7 @@ Size SettingsRow::measure(const Constraints& c) {
     float textW = innerW;
     if (hasAccessory && !below_) {
         const float wanted = std::max(0.0f, innerW - acc.w - kAccessoryGap);
-        const float floorW = std::min(kMinTitleW, innerW);
+        const float floorW = titleFloor(innerW);
         if (wanted < floorW) {
             textW = floorW;
             acc.w = std::max(0.0f, innerW - floorW - kAccessoryGap);
@@ -270,7 +291,7 @@ void SettingsRow::onLayout() {
     float textW = innerW;
     if (hasAccessory && !below_) {
         const float wanted = std::max(0.0f, innerW - acc.w - kAccessoryGap);
-        const float floorW = std::min(kMinTitleW, innerW);
+        const float floorW = titleFloor(innerW);
         if (wanted < floorW) {
             textW = floorW;
             acc.w = std::max(0.0f, innerW - floorW - kAccessoryGap);
