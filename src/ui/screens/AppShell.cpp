@@ -321,12 +321,26 @@ void AppShell::switchTo(AppTab tab, bool animated) {
  */
 void AppShell::setDockedLayout(bool docked) {
     docked_ = docked;
-    if (windowButtons_) { windowButtons_->setVisible(!docked); }
-    if (topBar_) { topBar_->stack().padding.right = docked ? kTopBarPadding : 0.0f; }
+    if (windowButtons_) { windowButtons_->setVisible(!docked && !nativeControls_); }
+    if (topBar_) { topBar_->stack().padding.right = (docked || nativeControls_) ? kTopBarPadding : 0.0f; }
     // The footer's dock switch only makes sense while floating.
     if (queue_ && queue_->footer()) {
         queue_->footer()->setDockToggle([this](bool) { linkVm_.toggleDock(); }, !docked && linkVm_.link().dockingSupported,
                                         linkVm_.link().docked);
+    }
+    invalidateLayout();
+}
+
+/**
+ * @brief Native caption buttons: hide ours and make room for the system's.
+ */
+void AppShell::setNativeWindowControls(bool native, float leadingInset) {
+    nativeControls_ = native;
+    leadingInset_ = native ? std::max(0.0f, leadingInset) : 0.0f;
+    if (windowButtons_) { windowButtons_->setVisible(!docked_ && !native); }
+    if (topBar_) {
+        topBar_->stack().padding.left = kTopBarPadding + leadingInset_;
+        topBar_->stack().padding.right = (docked_ || native) ? kTopBarPadding : 0.0f;
     }
     invalidateLayout();
 }

@@ -117,7 +117,10 @@ private:
 #else
     /// Creates the (uncached) layout on a cache miss.
     TextLayoutRef createLayout(std::wstring_view text, const TextStyle& style, float maxWidth, Trimming trimming, int maxLines);
+    /// Cached CTFontRef for a style (retained by the cache; never null after init()).
+    const void* font(const TextStyle& style);
     bool initialised_ = false;
+    std::unordered_map<uint64_t, const void*> fonts_;   ///< CTFontRef per style key (retained)
 #endif
     std::wstring families_[4];
     std::unordered_map<LayoutKey, LayoutEntry, LayoutKeyHash> layouts_;

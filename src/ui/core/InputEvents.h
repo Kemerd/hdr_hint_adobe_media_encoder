@@ -33,6 +33,9 @@ inline constexpr UINT VK_DOWN = 0x28;
 inline constexpr UINT VK_DELETE = 0x2E;     // forward delete
 inline constexpr UINT VK_F1 = 0x70;
 inline constexpr UINT VK_OEM_COMMA = 0xBC;
+
+/// One wheel notch in WheelEvent::delta units (WM_MOUSEWHEEL's WHEEL_DELTA).
+inline constexpr int WHEEL_DELTA = 120;
 #endif
 
 namespace hh::ui {

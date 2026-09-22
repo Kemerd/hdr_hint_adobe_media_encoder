@@ -19,11 +19,14 @@ inline constexpr const wchar_t* kFileBrowser = L"Explorer";
 inline constexpr const wchar_t* kTray = L"tray";
 /// mkvmerge's executable file name.
 inline constexpr const wchar_t* kMkvmergeExe = L"mkvmerge.exe";
+/// The toast button that sends a source file away ("Recycle").
+inline constexpr const wchar_t* kTrashAction = L"Recycle";
 #else
 inline constexpr const wchar_t* kTrash = L"Trash";
 inline constexpr const wchar_t* kFileBrowser = L"Finder";
 inline constexpr const wchar_t* kTray = L"menu bar";
 inline constexpr const wchar_t* kMkvmergeExe = L"mkvmerge";
+inline constexpr const wchar_t* kTrashAction = L"Move to Trash";
 #endif
 
 } // namespace hh::platform::terms

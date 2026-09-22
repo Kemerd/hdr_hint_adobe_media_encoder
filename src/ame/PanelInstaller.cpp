@@ -1,19 +1,34 @@
 // ---------------------------------------------------------------------------
-// PanelInstaller.cpp - installs the CEP panel into %APPDATA%\Adobe\CEP\extensions.
+// PanelInstaller.cpp - installs the CEP panel into the per-user CEP folder.
 //
-// The panel ships next to the exe (<exe>\cep\com.everett.hdrhint) and is
-// copied file-by-file into the per-user CEP extensions folder. A config.json
-// tells the panel where the exe lives; PlayerDebugMode="1" on CSXS.9..14
-// lets CEP load an unsigned extension for the current and future runtimes.
+//   Windows  %APPDATA%\Adobe\CEP\extensions\com.everett.hdrhint
+//   macOS    ~/Library/Application Support/Adobe/CEP/extensions/com.everett.hdrhint
+//
+// The panel ships with the app (<exe>\cep on Windows, HdrHint.app/Contents/
+// Resources/cep on macOS) and is copied file-by-file into place. A
+// config.json tells the panel where the app lives; PlayerDebugMode="1" on
+// CSXS.9..14 lets CEP load an unsigned extension for the current and future
+// runtimes (HKCU\Software\Adobe\CSXS.N on Windows, the com.adobe.CSXS.N
+// preferences domain on macOS).
 // ---------------------------------------------------------------------------
 #include "ame/PanelInstaller.h"
 
 #include "ame/AmeProcess.h"
 #include "core/Logger.h"
+#include "core/PathUtil.h"
 #include "platform/FileIo.h"
 #include "platform/KnownFolders.h"
-#include "platform/Registry.h"
+#include "platform/NamedPipe.h"
 #include "platform/Utf.h"
+
+#if defined(_WIN32)
+#include "platform/Registry.h"
+#else
+#include <CoreFoundation/CoreFoundation.h>
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
 
 #include <format>
 #include <string>
@@ -30,17 +45,17 @@ constexpr const wchar_t* kLog = L"PanelInstaller";
 /// Bundle id (also the folder name in both locations).
 constexpr const wchar_t* kBundleId = L"com.everett.hdrhint";
 
-/// Manifest location inside the bundle.
-constexpr std::wstring_view kManifestRelative = L"\\CSXS\\manifest.xml";
+/// Manifest location inside the bundle (folder, file).
+constexpr const wchar_t* kManifestFolder = L"CSXS";
+constexpr const wchar_t* kManifestFile = L"manifest.xml";
 
 /// Attribute we read out of the manifest.
 constexpr std::wstring_view kVersionAttribute = L"ExtensionBundleVersion=\"";
 
-/// Named pipe the panel connects to (as the panel expects it).
-constexpr std::wstring_view kPipeName = L"\\\\.\\pipe\\HdrHint";
-
+#if defined(_WIN32)
 /// Our own registry key.
 constexpr std::wstring_view kHdrHintKey = L"Software\\HdrHint";
+#endif
 
 /// CEP majors that get PlayerDebugMode (current runtime is 12; the extra
 /// keys keep the install working across future host updates).
@@ -52,6 +67,66 @@ constexpr uint64_t kMaxManifestBytes = 1024ull * 1024ull;
 
 /// Recursion guard for the copy / delete walkers.
 constexpr int kMaxTreeDepth = 32;
+
+/// <dir>/CSXS/manifest.xml with this platform's separator.
+std::wstring manifestIn(const std::wstring& bundleDir)
+{
+    return path::join(path::join(bundleDir, kManifestFolder), kManifestFile);
+}
+
+#if !defined(_WIN32)
+/// CFString from wide text (caller releases).
+CFStringRef cfString(std::wstring_view text)
+{
+    const std::string utf8 = platform::toUtf8(text);
+    return CFStringCreateWithBytes(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(utf8.data()),
+                                   static_cast<CFIndex>(utf8.size()), kCFStringEncodingUTF8, false);
+}
+
+/// Reads a string preference of another app's domain ("com.adobe.CSXS.12").
+std::wstring readPreferenceString(std::wstring_view domain, std::wstring_view key)
+{
+    CFStringRef app = cfString(domain);
+    CFStringRef name = cfString(key);
+    std::wstring out;
+    if (app != nullptr && name != nullptr) {
+        CFPropertyListRef value = CFPreferencesCopyAppValue(name, app);
+        if (value != nullptr) {
+            if (CFGetTypeID(value) == CFStringGetTypeID()) {
+                char buffer[64] = {};
+                if (CFStringGetCString(static_cast<CFStringRef>(value), buffer, sizeof(buffer), kCFStringEncodingUTF8)) {
+                    out = platform::toWide(buffer);
+                }
+            } else if (CFGetTypeID(value) == CFNumberGetTypeID()) {
+                long long number = 0;
+                CFNumberGetValue(static_cast<CFNumberRef>(value), kCFNumberLongLongType, &number);
+                out = std::to_wstring(number);
+            }
+            CFRelease(value);
+        }
+    }
+    if (app != nullptr) { CFRelease(app); }
+    if (name != nullptr) { CFRelease(name); }
+    return out;
+}
+
+/// Writes a string preference into another app's domain and flushes it.
+bool writePreferenceString(std::wstring_view domain, std::wstring_view key, std::wstring_view value)
+{
+    CFStringRef app = cfString(domain);
+    CFStringRef name = cfString(key);
+    CFStringRef text = cfString(value);
+    bool ok = false;
+    if (app != nullptr && name != nullptr && text != nullptr) {
+        CFPreferencesSetAppValue(name, text, app);
+        ok = CFPreferencesAppSynchronize(app);
+    }
+    if (app != nullptr) { CFRelease(app); }
+    if (name != nullptr) { CFRelease(name); }
+    if (text != nullptr) { CFRelease(text); }
+    return ok;
+}
+#endif
 
 /**
  * @brief Escapes a wide string for use inside a JSON string literal and
@@ -112,11 +187,11 @@ Result<void> copyTree(const std::wstring& from, const std::wstring& to, int dept
             continue;
         }
         if ((entry.attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
-            HH_LOG_WARN(kLog, L"skipping reparse point {}\\{}", from, entry.name);
+            HH_LOG_WARN(kLog, L"skipping reparse point {}", path::join(from, entry.name));
             continue;
         }
-        const std::wstring source = from + L"\\" + entry.name;
-        const std::wstring target = to + L"\\" + entry.name;
+        const std::wstring source = path::join(from, entry.name);
+        const std::wstring target = path::join(to, entry.name);
 
         // Directories recurse; files are copied with overwrite.
         if (entry.isDirectory) {
@@ -150,11 +225,20 @@ Result<void> deleteTree(const std::wstring& dir, int depth)
 
     // Only descend into real directories; a reparse point is removed as-is
     // (RemoveDirectory deletes the link, never the target).
+#if defined(_WIN32)
     const DWORD attributes = ::GetFileAttributesW(platform::toExtendedPath(dir).c_str());
     if (attributes == INVALID_FILE_ATTRIBUTES) {
         return Result<void>::success();   // already gone
     }
     const bool isLink = (attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+#else
+    const std::string native = platform::toUtf8(dir);
+    struct stat st {};
+    if (::lstat(native.c_str(), &st) != 0) {
+        return Result<void>::success();   // already gone
+    }
+    const bool isLink = S_ISLNK(st.st_mode);
+#endif
     if (!isLink) {
         auto listing = platform::listDirectory(dir);
         if (!listing) {
@@ -164,7 +248,7 @@ Result<void> deleteTree(const std::wstring& dir, int depth)
             if (entry.name.empty() || entry.name == L"." || entry.name == L"..") {
                 continue;
             }
-            const std::wstring child = dir + L"\\" + entry.name;
+            const std::wstring child = path::join(dir, entry.name);
             if (entry.isDirectory) {
                 if (auto sub = deleteTree(child, depth + 1); !sub) {
                     return sub;
@@ -177,6 +261,7 @@ Result<void> deleteTree(const std::wstring& dir, int depth)
         }
     }
 
+#if defined(_WIN32)
     // Read-only directories refuse RemoveDirectory; clear the bit first.
     const std::wstring extended = platform::toExtendedPath(dir);
     if ((attributes & FILE_ATTRIBUTE_READONLY) != 0) {
@@ -189,6 +274,17 @@ Result<void> deleteTree(const std::wstring& dir, int depth)
         }
         return Error::fromWin32(error, std::format(L"RemoveDirectory({})", dir));
     }
+#else
+    // A symlink is unlinked (never followed); a real folder is now empty.
+    const int rc = isLink ? ::unlink(native.c_str()) : ::rmdir(native.c_str());
+    if (rc != 0) {
+        const int err = errno;
+        if (err == ENOENT) {
+            return Result<void>::success();
+        }
+        return Error::fromErrno(err, std::format(L"rmdir({})", dir));
+    }
+#endif
     return Result<void>::success();
 }
 
@@ -197,6 +293,7 @@ Result<void> deleteTree(const std::wstring& dir, int depth)
  */
 Result<void> ensurePlayerDebugMode(int major)
 {
+#if defined(_WIN32)
     const std::wstring key = std::format(L"Software\\Adobe\\CSXS.{}", major);
     auto current = platform::regReadString(HKEY_CURRENT_USER, key, L"PlayerDebugMode");
     if (current && platform::trim(current.value()) == L"1") {
@@ -207,6 +304,18 @@ Result<void> ensurePlayerDebugMode(int major)
         HH_LOG_WARN(kLog, L"could not set PlayerDebugMode for CSXS.{}: {}", major, written.error().toString());
         return written;
     }
+#else
+    // macOS keeps it in the com.adobe.CSXS.N preferences domain
+    // (the same thing "defaults write com.adobe.CSXS.12 PlayerDebugMode 1" does).
+    const std::wstring domain = std::format(L"com.adobe.CSXS.{}", major);
+    if (platform::trim(readPreferenceString(domain, L"PlayerDebugMode")) == L"1") {
+        return Result<void>::success();
+    }
+    if (!writePreferenceString(domain, L"PlayerDebugMode", L"1")) {
+        HH_LOG_WARN(kLog, L"could not set PlayerDebugMode for {}", domain);
+        return Error::text(std::format(L"could not write PlayerDebugMode to {}", domain));
+    }
+#endif
     HH_LOG_INFO(kLog, L"PlayerDebugMode=1 set for CSXS.{}", major);
     return Result<void>::success();
 }
@@ -230,12 +339,13 @@ const wchar_t* panelBundleId() noexcept
  */
 std::wstring bundledPanelDirectory()
 {
-    const std::wstring exeDir = platform::exeDirectory();
+    // The shipped assets live next to the exe (Windows) or in the bundle's Resources (macOS).
+    const std::wstring exeDir = platform::resourceDirectory();
     if (exeDir.empty()) {
         HH_LOG_WARN(kLog, L"exe directory unknown; bundled panel path unavailable");
         return {};
     }
-    return exeDir + L"\\cep\\" + kBundleId;
+    return path::join(path::join(exeDir, L"cep"), kBundleId);
 }
 
 /**
@@ -249,7 +359,7 @@ std::wstring installedPanelDirectory()
         HH_LOG_WARN(kLog, L"roaming AppData folder unknown; install path unavailable");
         return {};
     }
-    return roaming + L"\\Adobe\\CEP\\extensions\\" + kBundleId;
+    return path::join(path::join(path::join(path::join(roaming, L"Adobe"), L"CEP"), L"extensions"), kBundleId);
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +416,7 @@ PanelStatus queryPanelStatus()
 
     // Installed = the manifest exists where CEP looks for it.
     if (!status.installPath.empty()) {
-        const std::wstring manifest = status.installPath + std::wstring(kManifestRelative);
+        const std::wstring manifest = manifestIn(status.installPath);
         status.installed = platform::isFile(manifest);
         if (status.installed) {
             status.installedVersion = readManifestVersion(manifest);
@@ -316,12 +426,16 @@ PanelStatus queryPanelStatus()
     // Bundled version next to the exe.
     const std::wstring bundled = bundledPanelDirectory();
     if (!bundled.empty()) {
-        status.bundledVersion = readManifestVersion(bundled + std::wstring(kManifestRelative));
+        status.bundledVersion = readManifestVersion(manifestIn(bundled));
     }
 
     // CSXS.12 is the runtime AME 2026 ships; that key decides loading.
+#if defined(_WIN32)
     auto debug = platform::regReadString(HKEY_CURRENT_USER, L"Software\\Adobe\\CSXS.12", L"PlayerDebugMode");
     status.debugModeOk = debug && platform::trim(debug.value()) == L"1";
+#else
+    status.debugModeOk = platform::trim(readPreferenceString(L"com.adobe.CSXS.12", L"PlayerDebugMode")) == L"1";
+#endif
 
     HH_LOG_DEBUG(kLog, L"panel status: installed {} ({}) bundled {} debugMode {}", status.installed,
                  status.installedVersion, status.bundledVersion, status.debugModeOk);
@@ -347,7 +461,7 @@ Result<void> installPanel()
     if (destination.empty()) {
         return Error::text(L"cannot resolve %APPDATA%\\Adobe\\CEP\\extensions");
     }
-    const std::wstring bundledVersion = readManifestVersion(source + std::wstring(kManifestRelative));
+    const std::wstring bundledVersion = readManifestVersion(manifestIn(source));
     if (bundledVersion.empty()) {
         return Error::text(std::format(L"bundled manifest is missing or has no ExtensionBundleVersion: {}", source));
     }
@@ -360,13 +474,15 @@ Result<void> installPanel()
     }
 
     // 2. config.json: where the exe lives and which pipe to connect to.
-    const std::wstring exe = platform::exePath();
+    // macOS: the .app bundle, which LaunchServices knows how to start.
+    const std::wstring exe = platform::launchablePath();
     if (exe.empty()) {
         return Error::text(L"cannot determine the path of the running executable");
     }
     const std::string config = std::format("{{\"exePath\": \"{}\", \"installedVersion\": \"{}\", \"pipeName\": \"{}\"}}\n",
-                                           jsonEscapeUtf8(exe), jsonEscapeUtf8(bundledVersion), jsonEscapeUtf8(kPipeName));
-    const std::wstring configPath = destination + L"\\config.json";
+                                           jsonEscapeUtf8(exe), jsonEscapeUtf8(bundledVersion),
+                                           jsonEscapeUtf8(platform::ipcEndpointName(L"HdrHint")));
+    const std::wstring configPath = path::join(destination, L"config.json");
     if (auto written = platform::writeAllAtomic(configPath, config); !written) {
         HH_LOG_ERROR(kLog, L"config.json write failed: {}", written.error().toString());
         return written;
@@ -380,6 +496,7 @@ Result<void> installPanel()
         }
     }
 
+#if defined(_WIN32)
     // 4. Our own key: the panel and the uninstaller read these.
     if (auto set = platform::regWriteString(HKEY_CURRENT_USER, kHdrHintKey, L"ExePath", exe); !set) {
         HH_LOG_ERROR(kLog, L"registry ExePath write failed: {}", set.error().toString());
@@ -389,6 +506,7 @@ Result<void> installPanel()
         HH_LOG_ERROR(kLog, L"registry Version write failed: {}", set.error().toString());
         return set;
     }
+#endif
 
     // A PlayerDebugMode failure means AME will not load the panel; say so.
     if (!failures.empty()) {
@@ -422,6 +540,7 @@ Result<void> uninstallPanel()
         }
     }
 
+#if defined(_WIN32)
     // Then our key (absent is fine).
     if (platform::regKeyExists(HKEY_CURRENT_USER, kHdrHintKey)) {
         if (auto deleted = platform::regDeleteKey(HKEY_CURRENT_USER, kHdrHintKey); !deleted) {
@@ -429,6 +548,7 @@ Result<void> uninstallPanel()
             return deleted;
         }
     }
+#endif
     HH_LOG_INFO(kLog, L"panel uninstalled");
     return Result<void>::success();
 }

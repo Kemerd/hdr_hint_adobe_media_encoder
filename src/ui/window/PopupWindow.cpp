@@ -26,6 +26,7 @@
 #include "core/Expected.h"
 #include "core/Logger.h"
 #include "platform/WinVersion.h"
+#include "ui/core/PopupSurface.h"
 #include "ui/window/Messages.h"
 
 #include <dwmapi.h>
@@ -54,12 +55,8 @@ constexpr UINT kMsgPurgeRetired = WM_USER + 2;     ///< destroy menus that were 
 constexpr UINT_PTR kOutsideClickTimer = 1;
 constexpr UINT kOutsideClickIntervalMs = 50;
 
-/// Corner radius of the popup card (design language: 10 for popups).
-constexpr float kCardRadius = 10.0f;
-/// Shadow blur in dips (kept below the shadow margin so nothing is cut off).
-constexpr float kShadowBlur = 18.0f;
 /// Gap between the anchor and the popup card.
-constexpr float kAnchorGapDips = 4.0f;
+constexpr float kAnchorGapDips = kPopupAnchorGap;
 
 /// DWM attribute ids written as numbers so SDK gating cannot bite.
 constexpr DWORD kDwmwaUseImmersiveDarkMode = 20;
@@ -146,111 +143,6 @@ bool isDeviceLostHr(HRESULT hr) {
     return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET ||
            hr == DXGI_ERROR_DEVICE_HUNG || hr == D2DERR_RECREATE_TARGET;
 }
-
-/**
- * @brief Root content of the popup: shadow + rounded opaque card, hosting
- *        the menu inset by the shadow margin.
- *
- * Not interactive itself, so clicks on the shadow margin fall through to
- * the window handler which treats them as "outside".
- */
-class PopupSurface final : public Widget {
-public:
-    explicit PopupSurface(float shadowMargin) : margin_(std::max(0.0f, shadowMargin)) {}
-
-    /**
-     * @brief Replaces the hosted menu. The previous one is retired (kept
-     *        alive until purgeRetired()) because it may be on the call stack.
-     */
-    Widget* setMenu(std::unique_ptr<Widget> menu) {
-        retireMenu();
-        if (!menu) {
-            return nullptr;
-        }
-        menu_ = addChild(std::move(menu));
-        invalidateLayout();
-        return menu_;
-    }
-
-    /// Detaches the current menu without destroying it yet.
-    void retireMenu() {
-        if (menu_ == nullptr) {
-            return;
-        }
-        std::unique_ptr<Widget> old = removeChild(menu_);
-        menu_ = nullptr;
-        if (old) {
-            retired_.push_back(std::move(old));
-        }
-        invalidateLayout();
-    }
-
-    /// Destroys retired menus (called from a posted message, never inline).
-    void purgeRetired() { retired_.clear(); }
-
-    [[nodiscard]] Widget* menu() const noexcept { return menu_; }
-    [[nodiscard]] float margin() const noexcept { return margin_; }
-
-    /// The card rect in local dips (window bounds inset by the margin).
-    [[nodiscard]] Rect cardRect() const { return bounds().inset(margin_); }
-
-    /**
-     * @brief Menu size plus the shadow margin on every side.
-     */
-    Size measure(const Constraints& c) override {
-        Size inner{0.0f, 0.0f};
-        if (menu_ != nullptr && menu_->visible()) {
-            // Offer the menu everything minus the margins (never negative).
-            Constraints loose = c;
-            loose.minW = 0.0f;
-            loose.minH = 0.0f;
-            loose.maxW = std::max(0.0f, c.maxW - 2.0f * margin_);
-            loose.maxH = std::max(0.0f, c.maxH - 2.0f * margin_);
-            inner = menu_->measure(loose);
-        }
-        return c.constrain({inner.w + 2.0f * margin_, inner.h + 2.0f * margin_});
-    }
-
-    /**
-     * @brief Pins the menu exactly to the card rect after the stack pass.
-     */
-    void onLayout() override {
-        if (menu_ == nullptr) {
-            return;
-        }
-        Rect card = cardRect();
-        card.w = std::max(0.0f, card.w);
-        card.h = std::max(0.0f, card.h);
-        menu_->measure(Constraints::tight(card.size()));
-        menu_->layout(card);
-    }
-
-    /**
-     * @brief Shadow, opaque card and a hairline outline.
-     */
-    void paintSelf(Canvas& c) override {
-        const Theme* t = theme();
-        const Theme fallback = Theme::dark();
-        if (t == nullptr) {
-            t = &fallback;
-        }
-        const Rect card = c.scale().snap(cardRect());
-        if (card.isEmpty()) {
-            return;
-        }
-        // Soft shadow first, then the opaque card on top of it.
-        c.drawShadow(card, kCardRadius, kShadowBlur, t->shadow, 6.0f);
-        c.fillRoundedRect(card, kCardRadius, t->elevatedOpaque);
-        // A hairline outline separates the card from busy backgrounds.
-        const float hair = c.scale().hairline();
-        c.strokeRoundedRect(card.inset(hair * 0.5f), kCardRadius, t->separatorStrong, hair);
-    }
-
-private:
-    float margin_ = 24.0f;
-    Widget* menu_ = nullptr;
-    std::vector<std::unique_ptr<Widget>> retired_;
-};
 
 } // namespace
 

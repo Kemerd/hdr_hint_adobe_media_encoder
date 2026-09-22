@@ -31,6 +31,7 @@
 #include "platform/RecycleBin.h"
 #include "platform/Registry.h"
 #include "platform/SingleInstance.h"
+#include "platform/Terms.h"
 #include "platform/Time.h"
 #include "platform/Utf.h"
 #include "platform/Win.h"
@@ -685,7 +686,7 @@ void App::showToast(const ToastRequest& t) {
     if (!t.actionLabel.empty() && t.jobId != 0) {
         spec.actionLabel = t.actionLabel;
         const JobId id = t.jobId;
-        const bool recycle = platform::iequals(t.actionLabel, L"Recycle");
+        const bool recycle = platform::iequals(t.actionLabel, platform::terms::kTrashAction);
         spec.onAction = [this, id, recycle] {
             if (!engine_) { return; }
             if (recycle) { engine_->recycleJob(id); } else { engine_->revealJob(id, true); }

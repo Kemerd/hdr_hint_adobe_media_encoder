@@ -34,6 +34,14 @@ public:
     /// Docked layout: no window buttons, opaque background, tighter paddings.
     void setDockedLayout(bool docked);
     [[nodiscard]] bool dockedLayout() const noexcept { return docked_; }
+    /**
+     * @brief The window draws its own caption buttons (macOS traffic lights).
+     *
+     * Hides the drawn minimize/maximize/close buttons and reserves
+     * @p leadingInset dips at the left of the top bar for the system buttons.
+     */
+    void setNativeWindowControls(bool native, float leadingInset);
+    [[nodiscard]] bool nativeWindowControls() const noexcept { return nativeControls_; }
     /// Maximized state affects the maximize/restore glyph.
     void setMaximized(bool maximized);
     /// Window-active dims the title like macOS.
@@ -86,6 +94,8 @@ private:
     Widget* current_ = nullptr;
     AppTab tab_ = AppTab::Queue;
     bool docked_ = false;
+    bool nativeControls_ = false;   ///< the OS draws the caption buttons (macOS)
+    float leadingInset_ = 0.0f;     ///< room left of the mark for those buttons
     bool maximized_ = false;
     bool active_ = true;
     bool tabsNarrow_ = false;

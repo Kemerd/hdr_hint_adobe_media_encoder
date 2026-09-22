@@ -209,7 +209,8 @@ else()
     set_source_files_properties(${HH_ICNS} PROPERTIES MACOSX_PACKAGE_LOCATION Resources)
 
     add_executable(HdrHint MACOSX_BUNDLE ${HH_SRC}/app/mac/main.mm ${HH_ICNS})
-    target_link_libraries(HdrHint PRIVATE hdrhint_ui)
+    # ServiceManagement: "Open at login" (SMAppService).
+    target_link_libraries(HdrHint PRIVATE hdrhint_ui "-framework ServiceManagement")
     hh_apply_flags(HdrHint)
     set_target_properties(HdrHint PROPERTIES
         OUTPUT_NAME "HdrHint"

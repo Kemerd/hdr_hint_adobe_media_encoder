@@ -1780,7 +1780,7 @@ void Engine::maybeRecycle(Job& job) {
     job.recycleMessage.clear();
     store_.touch();
     toast(ToastRequest::Tone::Warning, L"Move " + job.displayName() + L" to the " + platform::terms::kTrash + L"?", job.id,
-          L"Recycle");
+          platform::terms::kTrashAction);
     notifyJobs();
 }
 
