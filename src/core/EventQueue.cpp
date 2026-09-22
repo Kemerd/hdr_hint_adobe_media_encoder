@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// EventQueue.cpp - thread-safe queue with a PostMessage "kick" to the UI thread.
+// EventQueue.cpp - thread-safe queue with a "kick" to the UI thread.
 //
 // Kick coalescing: kickPending_ is set by the first pusher and cleared by the
 // drainer *before* it swaps the queue out. A push that lands between the
@@ -18,6 +18,7 @@ namespace hh {
  * Events posted before a target existed are still queued; if there are any,
  * a kick is issued right away so the new window drains them.
  */
+#if defined(_WIN32)
 void EngineEventQueue::setTarget(HWND hwnd, UINT message) {
     hwnd_.store(hwnd, std::memory_order_release);
     message_.store(message, std::memory_order_release);
@@ -29,6 +30,31 @@ void EngineEventQueue::setTarget(HWND hwnd, UINT message) {
         pending = !queue_.empty();
     }
     if (pending) {
+        kick();
+    }
+}
+#endif
+
+/**
+ * @brief Sets (or changes) the function used for kicks.
+ *
+ * The function is held by shared_ptr so a worker that already copied it can
+ * finish its call while the UI thread swaps in a new one.
+ */
+void EngineEventQueue::setTarget(EngineKick kick) {
+    {
+        std::lock_guard<std::mutex> lock(kickMutex_);
+        kickFn_ = kick ? std::make_shared<const EngineKick>(std::move(kick)) : nullptr;
+    }
+
+    // Anything waiting from before the target existed needs a kick now.
+    bool pending = false;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        pending = !queue_.empty();
+    }
+    if (pending) {
+        kickPending_.store(false, std::memory_order_release);
         kick();
     }
 }
@@ -79,6 +105,20 @@ void EngineEventQueue::kick() {
         return;
     }
 
+    // A function target wins when one is set (the only kind on POSIX).
+    std::shared_ptr<const EngineKick> fn;
+    {
+        std::lock_guard<std::mutex> lock(kickMutex_);
+        fn = kickFn_;
+    }
+    if (fn && *fn) {
+        if (!(*fn)()) {
+            kickPending_.store(false, std::memory_order_release);
+        }
+        return;
+    }
+
+#if defined(_WIN32)
     const HWND hwnd = hwnd_.load(std::memory_order_acquire);
     const UINT message = message_.load(std::memory_order_acquire);
     if (hwnd == nullptr || message == 0) {
@@ -89,6 +129,10 @@ void EngineEventQueue::kick() {
     if (!::PostMessageW(hwnd, message, 0, 0)) {
         kickPending_.store(false, std::memory_order_release);
     }
+#else
+    // No target yet: let the next post (or setTarget) retry.
+    kickPending_.store(false, std::memory_order_release);
+#endif
 }
 
 } // namespace hh

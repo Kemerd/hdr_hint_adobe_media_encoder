@@ -439,11 +439,11 @@ void consumeLines(RunState& state, bool flush) {
 /**
  * @brief True when the manual-reset cancel event is signalled right now.
  */
-bool cancelRequested(HANDLE cancelEvent) {
+bool cancelRequested(platform::WaitHandle cancelEvent) {
     if (cancelEvent == nullptr) {
         return false;
     }
-    return ::WaitForSingleObject(cancelEvent, 0) == WAIT_OBJECT_0;
+    return platform::isSignalled(cancelEvent);
 }
 
 /**
@@ -730,7 +730,7 @@ bool MkvmergeRunner::parseProgressLine(std::string_view rawLine, float& progress
 // run
 // ---------------------------------------------------------------------------
 
-MuxRunResult MkvmergeRunner::run(const MuxPlan& plan, HANDLE cancelEvent,
+MuxRunResult MkvmergeRunner::run(const MuxPlan& plan, platform::WaitHandle cancelEvent,
                                  const std::function<void(float)>& onProgress, MuxRecord& record) {
     MuxRunResult result;
     result.status = MuxRunResult::Status::Failed;

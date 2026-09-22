@@ -1,13 +1,30 @@
 // ---------------------------------------------------------------------------
 // Utf.cpp - UTF-8 <-> UTF-16 conversion and small wide-string helpers.
 //
-// Conversions go through MultiByteToWideChar / WideCharToMultiByte. A strict
-// pass (MB_ERR_INVALID_CHARS / WC_ERR_INVALID_CHARS) is tried first; when the
-// input contains garbage the lenient pass replaces it with U+FFFD, and a
-// hand-rolled byte mapper is the last line of defence so no caller ever sees
-// an exception or an empty string for non-empty input.
+// Windows: conversions go through MultiByteToWideChar / WideCharToMultiByte.
+// A strict pass (MB_ERR_INVALID_CHARS / WC_ERR_INVALID_CHARS) is tried first;
+// when the input contains garbage the lenient pass replaces it with U+FFFD,
+// and a hand-rolled byte mapper is the last line of defence so no caller ever
+// sees an exception or an empty string for non-empty input.
+//
+// macOS: wchar_t is UTF-32, so UTF-8 is decoded by hand (maximal-subpart
+// U+FFFD replacement, the same policy the Windows lenient pass follows).
+// Case folding is per code point through a UTF-8 C locale, which keeps the
+// 1:1 length guarantee ifind() relies on; legacy code pages and NFC go
+// through CoreFoundation.
 // ---------------------------------------------------------------------------
 #include "platform/Utf.h"
+
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#endif
+#if !defined(_WIN32)
+#include <cerrno>
+#include <cstdlib>
+#include <cwctype>
+#include <locale.h>
+#include <xlocale.h>
+#endif
 
 #include <charconv>
 #include <climits>
@@ -57,6 +74,7 @@ View trimImpl(View s) noexcept
     return s.substr(begin, end - begin);
 }
 
+#if defined(_WIN32)
 /**
  * @brief One MultiByteToWideChar round trip (size query + convert).
  *
@@ -110,7 +128,9 @@ std::string wideToMultiByte(UINT codePage, DWORD flags, std::wstring_view wide)
     out.resize(static_cast<size_t>(written));
     return out;
 }
+#endif
 
+#if defined(_WIN32)
 /**
  * @brief Last-resort byte mapper: ASCII passes through, everything else
  *        becomes U+FFFD. Only reached when the OS converter itself fails.
@@ -143,6 +163,7 @@ std::string wideToUtf8Lossy(std::wstring_view wide)
     }
     return out;
 }
+#endif
 
 /**
  * @brief Maps each byte to the same code point (ISO-8859-1 view of the
@@ -157,6 +178,220 @@ std::wstring bytesToWideLatin1(std::string_view bytes)
     }
     return out;
 }
+
+
+#if !defined(_WIN32)
+// ---------------------------------------------------------------------------
+// POSIX: hand-rolled UTF-8 <-> UTF-32 and locale-based case mapping
+// ---------------------------------------------------------------------------
+
+/// True for code points that may appear in well-formed Unicode text.
+constexpr bool isScalarValue(uint32_t cp) noexcept
+{
+    return cp <= 0x10FFFFu && (cp < 0xD800u || cp > 0xDFFFu);
+}
+
+/**
+ * @brief Decodes UTF-8 into UTF-32 wchar_t, replacing every maximal invalid
+ *        subpart with one U+FFFD (Unicode's recommended practice).
+ */
+std::wstring decodeUtf8(std::string_view in)
+{
+    std::wstring out;
+    out.reserve(in.size());
+    const auto* p = reinterpret_cast<const unsigned char*>(in.data());
+    const size_t n = in.size();
+    size_t i = 0;
+    while (i < n) {
+        const unsigned char b0 = p[i];
+        // ASCII fast path.
+        if (b0 < 0x80) {
+            out.push_back(static_cast<wchar_t>(b0));
+            ++i;
+            continue;
+        }
+        // Lead byte -> sequence length and the valid range of the 2nd byte.
+        size_t len = 0;
+        uint32_t cp = 0;
+        unsigned char lo = 0x80;
+        unsigned char hi = 0xBF;
+        if (b0 >= 0xC2 && b0 <= 0xDF) {
+            len = 2; cp = b0 & 0x1Fu;
+        } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+            len = 3; cp = b0 & 0x0Fu;
+            if (b0 == 0xE0) { lo = 0xA0; }          // no overlongs
+            if (b0 == 0xED) { hi = 0x9F; }          // no surrogates
+        } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+            len = 4; cp = b0 & 0x07u;
+            if (b0 == 0xF0) { lo = 0x90; }          // no overlongs
+            if (b0 == 0xF4) { hi = 0x8F; }          // nothing past U+10FFFF
+        } else {
+            // Stray continuation byte or an impossible lead byte.
+            out.push_back(kReplacement);
+            ++i;
+            continue;
+        }
+        // Consume continuation bytes; stop at the first one that does not fit.
+        size_t k = 1;
+        for (; k < len && i + k < n; ++k) {
+            const unsigned char b = p[i + k];
+            const unsigned char minB = (k == 1) ? lo : 0x80;
+            const unsigned char maxB = (k == 1) ? hi : 0xBF;
+            if (b < minB || b > maxB) {
+                break;
+            }
+            cp = (cp << 6) | (b & 0x3Fu);
+        }
+        if (k == len) {
+            out.push_back(static_cast<wchar_t>(cp));
+        } else {
+            out.push_back(kReplacement);            // truncated / malformed: one U+FFFD
+        }
+        i += k;
+    }
+    return out;
+}
+
+/// Appends the UTF-8 encoding of one scalar value.
+void appendUtf8(std::string& out, uint32_t cp)
+{
+    if (!isScalarValue(cp)) {
+        cp = 0xFFFDu;
+    }
+    if (cp < 0x80u) {
+        out.push_back(static_cast<char>(cp));
+    } else if (cp < 0x800u) {
+        out.push_back(static_cast<char>(0xC0u | (cp >> 6)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else if (cp < 0x10000u) {
+        out.push_back(static_cast<char>(0xE0u | (cp >> 12)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    } else {
+        out.push_back(static_cast<char>(0xF0u | (cp >> 18)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 12) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | ((cp >> 6) & 0x3Fu)));
+        out.push_back(static_cast<char>(0x80u | (cp & 0x3Fu)));
+    }
+}
+
+/**
+ * @brief Encodes wide text as UTF-8. UTF-16 surrogate pairs that slipped
+ *        into a UTF-32 string are combined; lone surrogates become U+FFFD.
+ */
+std::string encodeUtf8(std::wstring_view in)
+{
+    std::string out;
+    out.reserve(in.size() + in.size() / 2);
+    for (size_t i = 0; i < in.size(); ++i) {
+        uint32_t cp = static_cast<uint32_t>(in[i]);
+        if (cp >= 0xD800u && cp <= 0xDBFFu && i + 1 < in.size()) {
+            const uint32_t next = static_cast<uint32_t>(in[i + 1]);
+            if (next >= 0xDC00u && next <= 0xDFFFu) {
+                cp = 0x10000u + ((cp - 0xD800u) << 10) + (next - 0xDC00u);
+                ++i;
+            }
+        }
+        appendUtf8(out, cp);
+    }
+    return out;
+}
+
+/**
+ * @brief A UTF-8 ctype locale for towupper_l / towlower_l, created once.
+ *
+ * The process locale stays "C" (the engine never calls setlocale), and the
+ * C locale only folds ASCII. A private UTF-8 locale folds all of Unicode's
+ * simple 1:1 mappings without touching global state. nullptr when no UTF-8
+ * locale is installed; callers then fall back to ASCII folding.
+ */
+locale_t utf8Locale() noexcept
+{
+    static const locale_t s_locale = [] {
+        locale_t loc = ::newlocale(LC_CTYPE_MASK, "en_US.UTF-8", static_cast<locale_t>(nullptr));
+        if (loc == static_cast<locale_t>(nullptr)) {
+            loc = ::newlocale(LC_CTYPE_MASK, "UTF-8", static_cast<locale_t>(nullptr));
+        }
+        return loc;
+    }();
+    return s_locale;
+}
+
+/// Simple 1:1 upper-case mapping of one code point.
+wchar_t upperOf(wchar_t c) noexcept
+{
+    if (static_cast<uint32_t>(c) < 0x80u) {
+        return (c >= L'a' && c <= L'z') ? static_cast<wchar_t>(c - (L'a' - L'A')) : c;
+    }
+    const locale_t loc = utf8Locale();
+    return loc ? static_cast<wchar_t>(::towupper_l(static_cast<wint_t>(c), loc)) : c;
+}
+
+/// Simple 1:1 lower-case mapping of one code point.
+wchar_t lowerOf(wchar_t c) noexcept
+{
+    if (static_cast<uint32_t>(c) < 0x80u) {
+        return (c >= L'A' && c <= L'Z') ? static_cast<wchar_t>(c + (L'a' - L'A')) : c;
+    }
+    const locale_t loc = utf8Locale();
+    return loc ? static_cast<wchar_t>(::towlower_l(static_cast<wint_t>(c), loc)) : c;
+}
+
+/**
+ * @brief Windows-1252: what CP_ACP means on a western Windows box, and the
+ *        encoding very old AME builds wrote. 0x80..0x9F differ from Latin-1.
+ */
+constexpr uint16_t kCp1252High[32] = {
+    0x20AC, 0xFFFD, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021,
+    0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0xFFFD, 0x017D, 0xFFFD,
+    0xFFFD, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014,
+    0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0xFFFD, 0x017E, 0x0178,
+};
+
+std::wstring decodeCp1252(std::string_view bytes)
+{
+    std::wstring out;
+    out.reserve(bytes.size());
+    for (const char c : bytes) {
+        const auto u = static_cast<unsigned char>(c);
+        if (u >= 0x80 && u <= 0x9F) {
+            out.push_back(static_cast<wchar_t>(kCp1252High[u - 0x80]));
+        } else {
+            out.push_back(static_cast<wchar_t>(u));
+        }
+    }
+    return out;
+}
+
+#if defined(__APPLE__)
+/**
+ * @brief Decodes a Windows code page through CoreFoundation's converters.
+ * @return empty when CoreFoundation does not know the page
+ */
+std::wstring decodeWithCoreFoundation(std::string_view bytes, UINT codePage)
+{
+    const CFStringEncoding enc = ::CFStringConvertWindowsCodepageToEncoding(static_cast<UInt32>(codePage));
+    if (enc == kCFStringEncodingInvalidId || !::CFStringIsEncodingAvailable(enc)) {
+        return {};
+    }
+    CFStringRef str = ::CFStringCreateWithBytes(kCFAllocatorDefault, reinterpret_cast<const UInt8*>(bytes.data()),
+                                                static_cast<CFIndex>(bytes.size()), enc, false);
+    if (str == nullptr) {
+        return {};
+    }
+    // Round-trip through UTF-8, which the decoder above turns into UTF-32.
+    const CFIndex len = ::CFStringGetLength(str);
+    const CFIndex max = ::CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+    std::string utf8(static_cast<size_t>(max > 0 ? max : 1), '\0');
+    CFIndex used = 0;
+    ::CFStringGetBytes(str, CFRangeMake(0, len), kCFStringEncodingUTF8, '?', false,
+                       reinterpret_cast<UInt8*>(utf8.data()), max, &used);
+    ::CFRelease(str);
+    utf8.resize(static_cast<size_t>(used > 0 ? used : 0));
+    return decodeUtf8(utf8);
+}
+#endif
+#endif  // !_WIN32
 
 } // namespace
 
@@ -178,6 +413,10 @@ std::wstring toWide(std::string_view utf8)
         utf8 = utf8.substr(0, kMaxConvertible);
     }
 
+#if !defined(_WIN32)
+    // POSIX: one lenient pass does the same job as strict + lenient.
+    return decodeUtf8(utf8);
+#else
     // Strict pass: rejects malformed sequences outright.
     std::wstring strict = multiByteToWide(CP_UTF8, MB_ERR_INVALID_CHARS, utf8);
     if (!strict.empty()) {
@@ -192,6 +431,7 @@ std::wstring toWide(std::string_view utf8)
 
     // The converter itself failed (should not happen): map by hand.
     return bytesToWideLossy(utf8);
+#endif
 }
 
 /**
@@ -207,6 +447,9 @@ std::string toUtf8(std::wstring_view wide)
         wide = wide.substr(0, kMaxConvertible);
     }
 
+#if !defined(_WIN32)
+    return encodeUtf8(wide);
+#else
     // Strict pass first, lenient pass on failure.
     std::string strict = wideToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide);
     if (!strict.empty()) {
@@ -219,6 +462,7 @@ std::string toUtf8(std::wstring_view wide)
 
     // Converter failure: hand-mapped fallback.
     return wideToUtf8Lossy(wide);
+#endif
 }
 
 /**
@@ -241,12 +485,106 @@ std::wstring fromCodePage(std::string_view bytes, UINT codePage)
         bytes = bytes.substr(0, kMaxConvertible);
     }
 
+#if !defined(_WIN32)
+    // POSIX: "the ANSI page" is Windows-1252 (what a western Windows box and
+    // old AME builds wrote); other pages go through CoreFoundation.
+    if (codePage == CP_ACP || codePage == 1252) {
+        return decodeCp1252(bytes);
+    }
+#if defined(__APPLE__)
+    std::wstring viaCf = decodeWithCoreFoundation(bytes, codePage);
+    if (!viaCf.empty()) {
+        return viaCf;
+    }
+#endif
+    return bytesToWideLatin1(bytes);
+#else
     // Legacy pages: the OS maps undefined bytes to a best-fit character.
     std::wstring out = multiByteToWide(codePage, 0, bytes);
     if (!out.empty()) {
         return out;
     }
     return bytesToWideLatin1(bytes);
+#endif
+}
+
+/**
+ * @brief Decodes host-order UTF-16 code units into wide text.
+ */
+std::wstring fromUtf16(const char16_t* units, size_t count)
+{
+    if (units == nullptr || count == 0) {
+        return {};
+    }
+#if defined(_WIN32)
+    // wchar_t is UTF-16 here: the units are already the right representation.
+    return std::wstring(reinterpret_cast<const wchar_t*>(units), count);
+#else
+    std::wstring out;
+    out.reserve(count);
+    for (size_t i = 0; i < count; ++i) {
+        const uint32_t u = static_cast<uint32_t>(units[i]);
+        if (u >= 0xD800u && u <= 0xDBFFu) {
+            // High surrogate: needs a low surrogate right behind it.
+            if (i + 1 < count) {
+                const uint32_t v = static_cast<uint32_t>(units[i + 1]);
+                if (v >= 0xDC00u && v <= 0xDFFFu) {
+                    out.push_back(static_cast<wchar_t>(0x10000u + ((u - 0xD800u) << 10) + (v - 0xDC00u)));
+                    ++i;
+                    continue;
+                }
+            }
+            out.push_back(kReplacement);
+        } else if (u >= 0xDC00u && u <= 0xDFFFu) {
+            out.push_back(kReplacement);             // unpaired low surrogate
+        } else {
+            out.push_back(static_cast<wchar_t>(u));
+        }
+    }
+    return out;
+#endif
+}
+
+/**
+ * @brief NFC on macOS (CoreFoundation), identity elsewhere.
+ */
+std::wstring normalizeNfc(std::wstring_view s)
+{
+#if defined(__APPLE__)
+    // Pure ASCII is already in every normal form; skip the CoreFoundation trip.
+    bool ascii = true;
+    for (const wchar_t c : s) {
+        if (static_cast<uint32_t>(c) >= 0x80u) {
+            ascii = false;
+            break;
+        }
+    }
+    if (ascii) {
+        return std::wstring(s);
+    }
+    const std::string utf8 = toUtf8(s);
+    CFMutableStringRef str = ::CFStringCreateMutable(kCFAllocatorDefault, 0);
+    if (str == nullptr) {
+        return std::wstring(s);
+    }
+    ::CFStringAppendCString(str, utf8.c_str(), kCFStringEncodingUTF8);
+    ::CFStringNormalize(str, kCFStringNormalizationFormC);
+    const CFIndex len = ::CFStringGetLength(str);
+    const CFIndex max = ::CFStringGetMaximumSizeForEncoding(len, kCFStringEncodingUTF8) + 1;
+    std::string out(static_cast<size_t>(max > 0 ? max : 1), '\0');
+    CFIndex used = 0;
+    ::CFStringGetBytes(str, CFRangeMake(0, len), kCFStringEncodingUTF8, '?', false,
+                       reinterpret_cast<UInt8*>(out.data()), max, &used);
+    ::CFRelease(str);
+    out.resize(static_cast<size_t>(used > 0 ? used : 0));
+    // An embedded NUL stops CFStringAppendCString early; never lose text over it.
+    if (out.empty() && !s.empty()) {
+        return std::wstring(s);
+    }
+    return toWide(out);
+#else
+    return std::wstring(s);
+#endif
 }
 
 // ---------------------------------------------------------------------------
@@ -262,10 +600,16 @@ std::wstring toUpperInvariant(std::wstring_view s)
     if (out.empty()) {
         return out;
     }
+#if defined(_WIN32)
     // CharUpperBuffW works on an explicit length, so embedded NULs survive.
     if (out.size() <= static_cast<size_t>(UINT32_MAX)) {
         ::CharUpperBuffW(out.data(), static_cast<DWORD>(out.size()));
     }
+#else
+    for (wchar_t& c : out) {
+        c = upperOf(c);
+    }
+#endif
     return out;
 }
 
@@ -278,9 +622,15 @@ std::wstring toLowerInvariant(std::wstring_view s)
     if (out.empty()) {
         return out;
     }
+#if defined(_WIN32)
     if (out.size() <= static_cast<size_t>(UINT32_MAX)) {
         ::CharLowerBuffW(out.data(), static_cast<DWORD>(out.size()));
     }
+#else
+    for (wchar_t& c : out) {
+        c = lowerOf(c);
+    }
+#endif
     return out;
 }
 
@@ -301,9 +651,19 @@ bool iequals(std::wstring_view a, std::wstring_view b)
     if (a.size() > kMaxConvertible) {
         return false;
     }
+#if defined(_WIN32)
     const int result = ::CompareStringOrdinal(a.data(), static_cast<int>(a.size()),
                                               b.data(), static_cast<int>(b.size()), TRUE);
     return result == CSTR_EQUAL;
+#else
+    // Ordinal ignore-case: compare the upper-case forms code point by code point.
+    for (size_t i = 0; i < a.size(); ++i) {
+        if (a[i] != b[i] && upperOf(a[i]) != upperOf(b[i])) {
+            return false;
+        }
+    }
+    return true;
+#endif
 }
 
 /**
@@ -557,10 +917,23 @@ std::optional<double> parseDouble(std::wstring_view s)
 
     // Whole-string consumption is the "no junk" guarantee.
     double value = 0.0;
+#if defined(_WIN32)
     const std::from_chars_result r = std::from_chars(begin, end, value, std::chars_format::general);
     if (r.ec != std::errc() || r.ptr != end) {
         return std::nullopt;
     }
+#else
+    // Apple's libc++ has no floating-point from_chars on every supported
+    // toolchain; strtod_l with the C locale gives the same locale-free parse.
+    // The character set was validated above, so hex floats / inf / nan never
+    // reach it, and "narrow" is NUL-terminated for strtod.
+    char* parsedEnd = nullptr;
+    errno = 0;
+    value = ::strtod_l(begin, &parsedEnd, LC_C_LOCALE);
+    if (parsedEnd != end || errno == ERANGE) {
+        return std::nullopt;
+    }
+#endif
     if (!std::isfinite(value)) {
         return std::nullopt;
     }

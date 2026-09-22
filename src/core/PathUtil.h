@@ -11,7 +11,14 @@
 
 namespace hh::path {
 
-/// Absolute path, no \\?\ prefix, upper-cased: the dedup key for jobs.
+/// The separator this platform's paths are joined with.
+#if defined(_WIN32)
+inline constexpr wchar_t kSeparator = L'\\';
+#else
+inline constexpr wchar_t kSeparator = L'/';
+#endif
+
+/// Absolute path, no \\?\ prefix, upper-cased (macOS: also NFC): the dedup key for jobs.
 std::wstring normalizeKey(std::wstring_view path);
 
 /// "C:\a\b\clip.mp4" -> "clip.mp4"
@@ -22,9 +29,9 @@ std::wstring stem(std::wstring_view path);
 std::wstring extension(std::wstring_view path);
 /// Parent directory without trailing separator ("C:\" stays "C:\").
 std::wstring parent(std::wstring_view path);
-/// Joins with a single backslash.
+/// Joins with a single separator (backslash on Windows, slash elsewhere).
 std::wstring join(std::wstring_view dir, std::wstring_view name);
-/// Replaces '/' with '\' and collapses duplicate separators (keeps UNC prefix).
+/// Windows: '/' -> '\', duplicates collapsed (UNC prefix kept). POSIX: duplicate '/' collapsed.
 std::wstring normalizeSeparators(std::wstring_view path);
 
 /// True when @p ext (with dot) is in @p list (case-insensitive).

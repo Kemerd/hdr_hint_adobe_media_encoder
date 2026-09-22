@@ -7,6 +7,7 @@
 #include "core/HdrPresets.h"
 #include "core/JobModel.h"
 #include "core/Mp4Boxes.h"
+#include "platform/Event.h"
 #include "platform/Win.h"
 
 #include <cstdint>
@@ -98,7 +99,7 @@ public:
      * @param onProgress   0..1, called from the calling thread
      * @param record       filled with command line, exit code, warnings, tail lines
      */
-    static MuxRunResult run(const MuxPlan& plan, HANDLE cancelEvent,
+    static MuxRunResult run(const MuxPlan& plan, platform::WaitHandle cancelEvent,
                             const std::function<void(float)>& onProgress, MuxRecord& record);
 
     /**

@@ -30,14 +30,18 @@
 #include "core/MediaProbe.h"
 #include "core/Mp4Boxes.h"
 #include "core/PathUtil.h"
+#include "platform/Event.h"
 #include "platform/FileIo.h"
-#include "platform/Handle.h"
 #include "platform/KnownFolders.h"
+#include "platform/NamedPipe.h"
 #include "platform/RecycleBin.h"
-#include "platform/Registry.h"
 #include "platform/Time.h"
 #include "platform/Utf.h"
 #include "platform/Win.h"
+
+#if defined(_WIN32)
+#include "platform/Registry.h"
+#endif
 
 #include <nlohmann/json.hpp>
 
@@ -68,7 +72,9 @@ constexpr const wchar_t* kLog = L"Engine";
 /// Application version reported to panels and the registry.
 constexpr const wchar_t* kAppVersion = L"1.0.0";
 /// Registry key the CEP panel reads to find the executable.
+#if defined(_WIN32)
 constexpr const wchar_t* kRegistryKey = L"Software\\HdrHint";
+#endif
 /// Named-pipe protocol version advertised in the registry and launcher.json.
 constexpr DWORD kProtocolVersion = 1;
 /// jobs.json is written at most this often while the store keeps changing.
@@ -353,7 +359,7 @@ TailerConfig makeTailerConfig(const Settings& s) {
     c.pollMs = std::max(250, s.logPollMs);
     c.preferDayFirstDates = s.dateDayFirst;
     c.recentFoldersCount = std::max(0, s.watchRecentFoldersCount);
-    c.statePath = platform::appLocalDataFolder() + L"\\state.json";
+    c.statePath = path::join(platform::appLocalDataFolder(), L"state.json");
     c.rediscoverSeconds = 60;
     return c;
 }
@@ -379,7 +385,7 @@ std::wstring encodingPhaseText(float progress) {
  */
 Engine::Engine(Settings& settings, PresetRegistry& presets)
     : settings_(settings), presets_(presets) {
-    jobsPath_ = platform::appLocalDataFolder() + L"\\jobs.json";
+    jobsPath_ = path::join(platform::appLocalDataFolder(), L"jobs.json");
     HH_LOG_DEBUG(kLog, L"engine constructed; jobs file {}", jobsPath_);
 }
 
@@ -396,6 +402,7 @@ Engine::~Engine() {
 /**
  * @brief Starts the workers and re-arms probes for jobs that survived a restart.
  */
+#if defined(_WIN32)
 Result<void> Engine::start(HWND eventTarget, UINT eventMessage) {
     if (started_) {
         HH_LOG_WARN(kLog, L"start() called twice; ignoring");
@@ -408,6 +415,32 @@ Result<void> Engine::start(HWND eventTarget, UINT eventMessage) {
 
     // The queue must know where to kick before any worker can post.
     queue_.setTarget(eventTarget, eventMessage);
+    return startWorkers();
+}
+#endif
+
+/**
+ * @brief Starts the workers with a function-based kick (the macOS path).
+ */
+Result<void> Engine::start(EngineKick kick) {
+    if (started_) {
+        HH_LOG_WARN(kLog, L"start() called twice; ignoring");
+        return Result<void>::success();
+    }
+    if (!kick) {
+        return Error::text(L"Engine::start: no kick function");
+    }
+    HH_LOG_INFO(kLog, L"starting engine (function kick)");
+
+    // The queue must know where to kick before any worker can post.
+    queue_.setTarget(std::move(kick));
+    return startWorkers();
+}
+
+/**
+ * @brief Loads state, locates the tools and launches every worker.
+ */
+Result<void> Engine::startWorkers() {
 
     // ---- persisted state ---------------------------------------------------
     // A broken jobs.json must never stop the app; log and continue with an
@@ -2663,7 +2696,7 @@ Result<std::wstring> Engine::processOneShot(const std::wstring& path, const std:
 
     // ---- run ---------------------------------------------------------------------------
     // A manual-reset event that is never set: nothing cancels a one-shot.
-    platform::UniqueHandle cancel = platform::makeEvent(true, false);
+    platform::Event cancel = platform::makeWaitableEvent(true, false);
     if (!cancel) {
         return Error::fromLastError(L"CreateEvent");
     }
@@ -2673,7 +2706,7 @@ Result<std::wstring> Engine::processOneShot(const std::wstring& path, const std:
             onProgress(p);
         }
     };
-    const MuxRunResult run = MkvmergeRunner::run(plan, cancel.get(), progress, record);
+    const MuxRunResult run = MkvmergeRunner::run(plan, cancel.handle(), progress, record);
     HH_LOG_INFO(kLog, L"one-shot mkvmerge exit {} status {} ({} ms)", record.exitCode, static_cast<int>(run.status), record.durationMs);
 
     // Anything but Done / DoneWithWarnings is a failure; drop the partial.
@@ -2724,16 +2757,21 @@ Result<std::wstring> Engine::processOneShot(const std::wstring& path, const std:
 /**
  * @brief Writes HKCU\Software\HdrHint and %APPDATA%\HdrHint\launcher.json so
  *        the CEP panel can find and launch the executable.
+ *
+ * macOS has no registry: launcher.json (in ~/Library/Application Support/
+ * HdrHint) is the whole contract there, and "exePath" names the .app bundle
+ * so the panel and the AME startup script launch it through LaunchServices.
  */
 void Engine::updateRegistry() {
-    const std::wstring exe = platform::exePath();
+    const std::wstring exe = platform::launchablePath();
     if (exe.empty()) {
         HH_LOG_WARN(kLog, L"updateRegistry: executable path unknown");
         return;
     }
     const std::wstring pipeName = settings_.pipeName.empty() ? std::wstring(L"HdrHint") : settings_.pipeName;
-    const std::wstring fullPipe = L"\\\\.\\pipe\\" + pipeName;
+    const std::wstring fullPipe = platform::ipcEndpointName(pipeName);
 
+#if defined(_WIN32)
     // Registry values; each failure is logged and the rest still written.
     if (auto r = platform::regWriteString(HKEY_CURRENT_USER, kRegistryKey, L"ExePath", exe); !r) {
         HH_LOG_WARN(kLog, L"registry ExePath: {}", r.error().toString());
@@ -2747,6 +2785,7 @@ void Engine::updateRegistry() {
     if (auto r = platform::regWriteDword(HKEY_CURRENT_USER, kRegistryKey, L"ProtocolVersion", kProtocolVersion); !r) {
         HH_LOG_WARN(kLog, L"registry ProtocolVersion: {}", r.error().toString());
     }
+#endif
 
     // launcher.json: the panel reads this with fs instead of parsing reg.exe.
     nlohmann::json j = nlohmann::json::object();
@@ -2759,7 +2798,7 @@ void Engine::updateRegistry() {
         HH_LOG_WARN(kLog, L"updateRegistry: roaming data folder unknown; launcher.json not written");
         return;
     }
-    const std::wstring launcher = folder + L"\\launcher.json";
+    const std::wstring launcher = path::join(folder, L"launcher.json");
     if (auto r = platform::writeAllAtomic(launcher, dumpJson(j, 2)); !r) {
         HH_LOG_WARN(kLog, L"launcher.json: {}", r.error().toString());
     } else {

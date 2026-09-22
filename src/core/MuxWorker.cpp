@@ -16,8 +16,10 @@
 #include "platform/Utf.h"
 
 #include <algorithm>
+#include <chrono>
 #include <format>
 #include <optional>
+#include <thread>
 #include <utility>
 
 namespace hh {
@@ -27,7 +29,7 @@ namespace {
 /// Component tag used for every log line in this file.
 constexpr const wchar_t* kLog = L"MuxWorker";
 
-/// Back-off when WaitForMultipleObjects itself fails (should never happen).
+/// Back-off when waitAny() itself fails (should never happen).
 constexpr DWORD kWaitFailureBackoffMs = 250;
 
 /**
@@ -56,9 +58,9 @@ void discardPartial(const MuxPlan& plan) {
 
 MuxWorker::MuxWorker(IEngineSink& sink)
     : sink_(sink)
-    , stopEvent_(platform::makeEvent(true, false))
-    , wakeEvent_(platform::makeEvent(false, false))
-    , cancelEvent_(platform::makeEvent(true, false)) {
+    , stopEvent_(platform::makeWaitableEvent(true, false))
+    , wakeEvent_(platform::makeWaitableEvent(false, false))
+    , cancelEvent_(platform::makeWaitableEvent(true, false)) {
     // Event creation only fails under extreme resource pressure; log it so a
     // silent "worker never wakes" has a trail.
     if (!stopEvent_ || !wakeEvent_ || !cancelEvent_) {
@@ -83,10 +85,10 @@ void MuxWorker::start() {
         thread_.join();
     }
     if (stopEvent_) {
-        ::ResetEvent(stopEvent_.get());
+        stopEvent_.reset();
     }
     if (cancelEvent_) {
-        ::ResetEvent(cancelEvent_.get());
+        cancelEvent_.reset();
     }
     thread_ = std::thread(&MuxWorker::threadMain, this);
     HH_LOG_INFO(kLog, L"started");
@@ -96,13 +98,13 @@ void MuxWorker::stop() {
     // Signal stop and cancel so both the idle wait and a running mux return.
     const bool wasRunning = running_.exchange(false);
     if (stopEvent_) {
-        ::SetEvent(stopEvent_.get());
+        stopEvent_.set();
     }
     if (cancelEvent_) {
-        ::SetEvent(cancelEvent_.get());
+        cancelEvent_.set();
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
 
     // Join unless we are being called from the worker thread itself (which
@@ -139,7 +141,7 @@ void MuxWorker::enqueue(MuxRequest request) {
         HH_LOG_WARN(kLog, L"enqueue() while the worker is not running; job waits for start()");
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
 }
 
@@ -155,7 +157,7 @@ void MuxWorker::cancel(JobId jobId) {
         std::lock_guard<std::mutex> lock(mutex_);
         if (current_.load() == jobId) {
             if (cancelEvent_) {
-                ::SetEvent(cancelEvent_.get());
+                cancelEvent_.set();
             }
             HH_LOG_INFO(kLog, L"cancel requested for running job {}", jobId);
             return;
@@ -188,12 +190,12 @@ void MuxWorker::cancel(JobId jobId) {
 
 void MuxWorker::threadMain() {
     HH_LOG_DEBUG(kLog, L"worker thread running");
-    HANDLE waits[2] = {stopEvent_.get(), wakeEvent_.get()};
+    const platform::WaitHandle waits[2] = {stopEvent_.handle(), wakeEvent_.handle()};
 
     for (;;) {
         // Drain the queue one job at a time.
         for (;;) {
-            if (stopEvent_ && ::WaitForSingleObject(stopEvent_.get(), 0) == WAIT_OBJECT_0) {
+            if (stopEvent_ && stopEvent_.isSet()) {
                 break;
             }
 
@@ -209,13 +211,13 @@ void MuxWorker::threadMain() {
                 std::lock_guard<std::mutex> lock(mutex_);
                 if (!queue_.empty()) {
                     if (cancelEvent_) {
-                        ::ResetEvent(cancelEvent_.get());
+                        cancelEvent_.reset();
                     }
                     // stop() signals stop before cancel, so re-checking stop
                     // after the reset guarantees a shutdown that raced the
                     // reset is still observed: either stop is visible here
                     // or its cancel signal lands after the reset.
-                    if (stopEvent_ && ::WaitForSingleObject(stopEvent_.get(), 0) == WAIT_OBJECT_0) {
+                    if (stopEvent_ && stopEvent_.isSet()) {
                         stopping = true;
                     } else {
                         request = std::move(queue_.front());
@@ -251,7 +253,7 @@ void MuxWorker::threadMain() {
         }
 
         // Stop requested: report whatever is still queued as cancelled.
-        if (!stopEvent_ || ::WaitForSingleObject(stopEvent_.get(), 0) == WAIT_OBJECT_0) {
+        if (!stopEvent_ || stopEvent_.isSet()) {
             std::deque<MuxRequest> leftovers;
             {
                 std::lock_guard<std::mutex> lock(mutex_);
@@ -269,16 +271,16 @@ void MuxWorker::threadMain() {
         }
 
         // Idle: wait for stop or new work.
-        const DWORD w = ::WaitForMultipleObjects(2, waits, FALSE, INFINITE);
-        if (w == WAIT_OBJECT_0) {
+        const DWORD w = platform::waitAny(waits, 2, INFINITE);
+        if (w == 0) {
             continue;   // stop: the top of the loop handles the leftovers
         }
-        if (w == WAIT_OBJECT_0 + 1) {
+        if (w == 1) {
             continue;   // wake: drain again
         }
-        // WAIT_FAILED (or an abandoned handle): never spin hot.
-        HH_LOG_ERROR(kLog, L"WaitForMultipleObjects failed: {}", Error::fromLastError(L"WaitForMultipleObjects").toString());
-        ::Sleep(kWaitFailureBackoffMs);
+        // kWaitFailed: never spin hot.
+        HH_LOG_ERROR(kLog, L"wait failed: {}", Error::fromLastError(L"waitAny").toString());
+        std::this_thread::sleep_for(std::chrono::milliseconds(kWaitFailureBackoffMs));
         if (!running_.load()) {
             break;
         }
@@ -331,7 +333,7 @@ void MuxWorker::process(MuxRequest& request) {
         postFinished(MuxEvent::Outcome::Failed, std::move(message), {});
     };
     auto cancelled = [&]() -> bool {
-        return cancelEvent_ && ::WaitForSingleObject(cancelEvent_.get(), 0) == WAIT_OBJECT_0;
+        return cancelEvent_ && cancelEvent_.isSet();
     };
     auto finishCancelled = [&]() {
         HH_LOG_INFO(kLog, L"job {} cancelled", jobId);
@@ -460,7 +462,7 @@ void MuxWorker::process(MuxRequest& request) {
     // ---- Mux ----------------------------------------------------------------
     postProgress(L"Muxing", 0.0f);
     const MuxRunResult runResult = MkvmergeRunner::run(
-        plan, cancelEvent_.get(),
+        plan, cancelEvent_.handle(),
         [&](float progress) { postProgress(L"Muxing", progress); },
         record);
 

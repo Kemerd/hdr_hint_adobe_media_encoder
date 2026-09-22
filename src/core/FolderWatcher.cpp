@@ -35,7 +35,7 @@ namespace {
 /// Component tag used for every log line in this file.
 constexpr const wchar_t* kLog = L"Watcher";
 
-/// WaitForMultipleObjects allows 64 handles: stop + wake + 60 directories.
+/// waitAny() takes 64 handles: stop + wake + 60 directories.
 constexpr size_t kMaxWatchedFolders = 60;
 /// Loop timeout: flushes debounced entries and drives the retry timer.
 constexpr DWORD kLoopTimeoutMs = 250;
@@ -289,12 +289,12 @@ void FolderWatcher::start(const WatcherConfig& config) {
     config_ = sanitize(config);
 
     // Manual-reset stop event, auto-reset wake event.
-    stopEvent_ = platform::makeEvent(true);
-    wakeEvent_ = platform::makeEvent(false);
+    stopEvent_ = platform::makeWaitableEvent(true);
+    wakeEvent_ = platform::makeWaitableEvent(false);
     if (!stopEvent_ || !wakeEvent_) {
         HH_LOG_ERROR(kLog, L"could not create thread events: {}", Error::fromLastError(L"CreateEvent").toString());
-        stopEvent_.reset();
-        wakeEvent_.reset();
+        stopEvent_.close();
+        wakeEvent_.close();
         return;
     }
 
@@ -319,7 +319,7 @@ void FolderWatcher::start(const WatcherConfig& config) {
 void FolderWatcher::stop() {
     running_.store(false);
     if (stopEvent_) {
-        ::SetEvent(stopEvent_.get());
+        stopEvent_.set();
     }
     if (thread_.joinable()) {
         if (thread_.get_id() == std::this_thread::get_id()) {
@@ -336,8 +336,8 @@ void FolderWatcher::stop() {
         commands_.clear();
         configPending_ = false;
     }
-    stopEvent_.reset();
-    wakeEvent_.reset();
+    stopEvent_.close();
+    wakeEvent_.close();
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ void FolderWatcher::setFolders(const std::vector<std::wstring>& folders) {
         }
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
     HH_LOG_INFO(kLog, L"folder set replaced: {} folder(s)", clean.size());
 }
@@ -408,7 +408,7 @@ void FolderWatcher::addFolder(const std::wstring& folder) {
         return;
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
     HH_LOG_INFO(kLog, L"folder added: '{}'", f);
 }
@@ -438,7 +438,7 @@ void FolderWatcher::removeFolder(const std::wstring& folder) {
         return;
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
     HH_LOG_INFO(kLog, L"folder removed: '{}'", f);
 }
@@ -461,7 +461,7 @@ void FolderWatcher::updateConfig(const WatcherConfig& config) {
         configPending_ = true;
     }
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
 }
 
@@ -476,10 +476,10 @@ void FolderWatcher::updateConfig(const WatcherConfig& config) {
 void FolderWatcher::threadMain() {
     HH_LOG_INFO(kLog, L"watcher thread started");
 
-    std::vector<HANDLE> handles;
+    std::vector<platform::WaitHandle> handles;
     std::vector<Watched*> byHandle;
-    handles.reserve(MAXIMUM_WAIT_OBJECTS);
-    byHandle.reserve(MAXIMUM_WAIT_OBJECTS);
+    handles.reserve(platform::kMaxWaitHandles);
+    byHandle.reserve(platform::kMaxWaitHandles);
 
     while (running_.load()) {
         // Folder set / config changes are applied here, on this thread only.
@@ -488,14 +488,14 @@ void FolderWatcher::threadMain() {
         // Build the wait list: stop, wake, then one event per live watch.
         handles.clear();
         byHandle.clear();
-        handles.push_back(stopEvent_.get());
-        handles.push_back(wakeEvent_.get());
+        handles.push_back(stopEvent_.handle());
+        handles.push_back(wakeEvent_.handle());
         for (const auto& w : watched_) {
             if (!w || !w->available || !w->watch || !w->watch->active()) {
                 continue;
             }
-            const HANDLE ev = w->watch->event();
-            if (ev == nullptr || handles.size() >= MAXIMUM_WAIT_OBJECTS) {
+            const platform::WaitHandle ev = w->watch->event();
+            if (ev == platform::kInvalidWaitHandle || handles.size() >= platform::kMaxWaitHandles) {
                 continue;
             }
             handles.push_back(ev);
@@ -503,15 +503,15 @@ void FolderWatcher::threadMain() {
         }
 
         // Sleep until something fires or the housekeeping tick elapses.
-        const DWORD r = ::WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE,
+        const DWORD r = platform::waitAny(handles.data(), handles.size(),
                                                  kLoopTimeoutMs);
-        if (r == WAIT_OBJECT_0) {
+        if (r == 0) {
             break;
         }
-        if (r == WAIT_FAILED) {
+        if (r == platform::kWaitFailed) {
             // Should never happen with valid handles; avoid a hot loop anyway.
-            HH_LOG_ERROR(kLog, L"WaitForMultipleObjects failed: {}", Error::fromLastError(L"wait").toString());
-            if (::WaitForSingleObject(stopEvent_.get(), 1000) == WAIT_OBJECT_0) {
+            HH_LOG_ERROR(kLog, L"wait failed: {}", Error::fromLastError(L"wait").toString());
+            if (stopEvent_.wait(1000)) {
                 break;
             }
             continue;
@@ -520,15 +520,15 @@ void FolderWatcher::threadMain() {
             break;
         }
 
-        // WaitForMultipleObjects reports only the lowest signalled handle, so
+        // waitAny() reports only the lowest signalled handle, so
         // poll every watch event with a zero timeout to keep busy folders
         // from starving quieter ones further down the list.
-        if (r != WAIT_TIMEOUT) {
+        if (r != platform::kWaitTimeout) {
             for (Watched* w : byHandle) {
                 if (!w || !w->available || !w->watch || !w->watch->active()) {
                     continue;
                 }
-                if (::WaitForSingleObject(w->watch->event(), 0) == WAIT_OBJECT_0) {
+                if (platform::isSignalled(w->watch->event())) {
                     processChanges(*w);
                 }
             }

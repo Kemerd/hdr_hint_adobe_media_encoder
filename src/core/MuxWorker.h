@@ -5,7 +5,7 @@
 
 #include "core/EngineEvents.h"
 #include "core/MkvmergeRunner.h"
-#include "platform/Handle.h"
+#include "platform/Event.h"
 #include "platform/Win.h"
 
 #include <atomic>
@@ -53,9 +53,9 @@ private:
     std::atomic<bool> running_{false};
     std::atomic<bool> busy_{false};
     std::atomic<JobId> current_{0};
-    platform::UniqueHandle stopEvent_;
-    platform::UniqueHandle wakeEvent_;
-    platform::UniqueHandle cancelEvent_;      ///< manual-reset; set to abort the current job
+    platform::Event stopEvent_;
+    platform::Event wakeEvent_;
+    platform::Event cancelEvent_;      ///< manual-reset; set to abort the current job
     std::mutex mutex_;
     std::deque<MuxRequest> queue_;
 };

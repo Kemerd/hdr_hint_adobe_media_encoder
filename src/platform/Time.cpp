@@ -7,8 +7,19 @@
 // The AME timestamp parser is a small hand-written scanner: no std::regex,
 // no exceptions, and it tolerates the narrow no-break spaces newer Windows
 // builds put in front of "AM"/"PM".
+//
+// POSIX builds keep every line of that logic: only the four primitives that
+// talk to the OS (clock reads, UTC <-> civil time, local <-> UTC) have a
+// second implementation, built on clock_gettime, gmtime_r, localtime_r and
+// mktime, which apply the zone rules of the instant being converted exactly
+// like the Win32 Tz* functions do.
 // ---------------------------------------------------------------------------
 #include "platform/Time.h"
+
+#if !defined(_WIN32)
+#include <ctime>
+#include <time.h>
+#endif
 
 #include <cstdint>
 #include <cstdlib>
@@ -33,6 +44,44 @@ constexpr uint64_t kUnixEpochTicks = 116'444'736'000'000'000ull;
 /// FileTimeToSystemTime rejects values with the top bit set.
 constexpr uint64_t kMaxFileTime = 0x7FFFFFFFFFFFFFFFull;
 
+#if !defined(_WIN32)
+/**
+ * @brief The civil-time record the formatting code is written against.
+ *
+ * Same fields and meaning as Win32's SYSTEMTIME (month 1..12, day-of-week
+ * 0 = Sunday), so the shared formatting/parsing code below compiles
+ * unchanged on both platforms.
+ */
+struct SYSTEMTIME {
+    WORD wYear = 0;
+    WORD wMonth = 0;
+    WORD wDayOfWeek = 0;
+    WORD wDay = 0;
+    WORD wHour = 0;
+    WORD wMinute = 0;
+    WORD wSecond = 0;
+    WORD wMilliseconds = 0;
+};
+
+/// struct tm -> SYSTEMTIME (milliseconds supplied separately).
+SYSTEMTIME fromTm(const std::tm& tm, unsigned millis) noexcept
+{
+    SYSTEMTIME st;
+    st.wYear = static_cast<WORD>(tm.tm_year + 1900);
+    st.wMonth = static_cast<WORD>(tm.tm_mon + 1);
+    st.wDayOfWeek = static_cast<WORD>(tm.tm_wday);
+    st.wDay = static_cast<WORD>(tm.tm_mday);
+    st.wHour = static_cast<WORD>(tm.tm_hour);
+    st.wMinute = static_cast<WORD>(tm.tm_min);
+    st.wSecond = static_cast<WORD>(tm.tm_sec > 59 ? 59 : tm.tm_sec);   // fold leap seconds
+    st.wMilliseconds = static_cast<WORD>(millis % 1000u);
+    return st;
+}
+
+/// FILETIME ticks -> (Unix seconds, millisecond remainder), floor semantics.
+void splitUtc(uint64_t utc, std::time_t& seconds, unsigned& millis) noexcept;
+#endif
+
 /// Month abbreviations for the friendly format.
 constexpr const wchar_t* kMonthNames[12] = {
     L"Jan", L"Feb", L"Mar", L"Apr", L"May", L"Jun",
@@ -46,6 +95,7 @@ constexpr const wchar_t* kMonthNames[12] = {
  */
 uint64_t qpcFrequency() noexcept
 {
+#if defined(_WIN32)
     static const uint64_t frequency = [] {
         LARGE_INTEGER value{};
         if (!::QueryPerformanceFrequency(&value) || value.QuadPart <= 0) {
@@ -54,6 +104,10 @@ uint64_t qpcFrequency() noexcept
         return static_cast<uint64_t>(value.QuadPart);
     }();
     return frequency;
+#else
+    // CLOCK_MONOTONIC counts nanoseconds.
+    return 1'000'000'000ull;
+#endif
 }
 
 /**
@@ -61,12 +115,39 @@ uint64_t qpcFrequency() noexcept
  */
 uint64_t qpcCounter() noexcept
 {
+#if defined(_WIN32)
     LARGE_INTEGER value{};
     if (!::QueryPerformanceCounter(&value) || value.QuadPart < 0) {
         return 0;
     }
     return static_cast<uint64_t>(value.QuadPart);
+#else
+    // CLOCK_MONOTONIC keeps counting across sleep on macOS (CLOCK_UPTIME_RAW
+    // would stop), which matches QPC's behaviour for our timeouts.
+    timespec ts{};
+    if (::clock_gettime(CLOCK_MONOTONIC, &ts) != 0 || ts.tv_sec < 0) {
+        return 0;
+    }
+    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ull + static_cast<uint64_t>(ts.tv_nsec);
+#endif
 }
+
+#if !defined(_WIN32)
+void splitUtc(uint64_t utc, std::time_t& seconds, unsigned& millis) noexcept
+{
+    // Signed arithmetic so instants before 1970 floor correctly.
+    const int64_t ms = static_cast<int64_t>(utc / kTicksPerMillisecond)
+                     - static_cast<int64_t>(kUnixEpochTicks / kTicksPerMillisecond);
+    int64_t secs = ms / 1000;
+    int64_t rem = ms % 1000;
+    if (rem < 0) {
+        rem += 1000;
+        --secs;
+    }
+    seconds = static_cast<std::time_t>(secs);
+    millis = static_cast<unsigned>(rem);
+}
+#endif
 
 /**
  * @brief Converts a FILETIME uint64 into a UTC SYSTEMTIME.
@@ -76,6 +157,7 @@ bool toUtcSystemTime(uint64_t utc, SYSTEMTIME& out) noexcept
     if (utc > kMaxFileTime) {
         return false;
     }
+#if defined(_WIN32)
     const FILETIME ft = uint64ToFileTime(utc);
     SYSTEMTIME st{};
     if (!::FileTimeToSystemTime(&ft, &st)) {
@@ -83,6 +165,17 @@ bool toUtcSystemTime(uint64_t utc, SYSTEMTIME& out) noexcept
     }
     out = st;
     return true;
+#else
+    std::time_t seconds = 0;
+    unsigned millis = 0;
+    splitUtc(utc, seconds, millis);
+    std::tm tm{};
+    if (::gmtime_r(&seconds, &tm) == nullptr) {
+        return false;
+    }
+    out = fromTm(tm, millis);
+    return true;
+#endif
 }
 
 /**
@@ -95,6 +188,23 @@ bool toUtcSystemTime(uint64_t utc, SYSTEMTIME& out) noexcept
  */
 bool toLocalSystemTime(uint64_t utc, SYSTEMTIME& localOut, int& offsetMinutesOut) noexcept
 {
+#if !defined(_WIN32)
+    // localtime_r applies the zone rules for this very instant and reports
+    // the offset that was in force (tm_gmtoff, seconds east of UTC).
+    if (utc > kMaxFileTime) {
+        return false;
+    }
+    std::time_t seconds = 0;
+    unsigned millis = 0;
+    splitUtc(utc, seconds, millis);
+    std::tm tm{};
+    if (::localtime_r(&seconds, &tm) == nullptr) {
+        return false;
+    }
+    localOut = fromTm(tm, millis);
+    offsetMinutesOut = static_cast<int>(tm.tm_gmtoff / 60);
+    return true;
+#else
     SYSTEMTIME utcSt{};
     if (!toUtcSystemTime(utc, utcSt)) {
         return false;
@@ -130,6 +240,7 @@ bool toLocalSystemTime(uint64_t utc, SYSTEMTIME& localOut, int& offsetMinutesOut
     localOut = local;
     offsetMinutesOut = offsetMinutes;
     return true;
+#endif
 }
 
 /**
@@ -140,6 +251,32 @@ bool toLocalSystemTime(uint64_t utc, SYSTEMTIME& localOut, int& offsetMinutesOut
  */
 std::optional<uint64_t> localSystemTimeToUtc(const SYSTEMTIME& local) noexcept
 {
+#if !defined(_WIN32)
+    // mktime with tm_isdst = -1 lets the zone database decide whether DST
+    // applied on that date, which is what TzSpecificLocalTimeToSystemTime does.
+    std::tm tm{};
+    tm.tm_year = static_cast<int>(local.wYear) - 1900;
+    tm.tm_mon = static_cast<int>(local.wMonth) - 1;
+    tm.tm_mday = static_cast<int>(local.wDay);
+    tm.tm_hour = static_cast<int>(local.wHour);
+    tm.tm_min = static_cast<int>(local.wMinute);
+    tm.tm_sec = static_cast<int>(local.wSecond);
+    tm.tm_isdst = -1;
+    if (local.wMonth < 1 || local.wMonth > 12 || local.wDay < 1 || local.wDay > 31) {
+        return std::nullopt;
+    }
+    const std::time_t seconds = ::mktime(&tm);
+    if (seconds == static_cast<std::time_t>(-1) && !(local.wYear == 1969 && local.wMonth == 12 && local.wDay == 31)) {
+        return std::nullopt;
+    }
+    const int64_t ticks = static_cast<int64_t>(seconds) * static_cast<int64_t>(kTicksPerSecond)
+                        + static_cast<int64_t>(kUnixEpochTicks)
+                        + static_cast<int64_t>(local.wMilliseconds % 1000u) * static_cast<int64_t>(kTicksPerMillisecond);
+    if (ticks < 0) {
+        return std::nullopt;
+    }
+    return static_cast<uint64_t>(ticks);
+#else
     SYSTEMTIME utcSt{};
     if (::TzSpecificLocalTimeToSystemTime(nullptr, &local, &utcSt)) {
         FILETIME ft{};
@@ -170,6 +307,7 @@ std::optional<uint64_t> localSystemTimeToUtc(const SYSTEMTIME& local) noexcept
         return std::nullopt;
     }
     return static_cast<uint64_t>(ticks);
+#endif
 }
 
 /**
@@ -311,9 +449,21 @@ int readMeridiem(Scanner& sc) noexcept
  */
 uint64_t nowUtc()
 {
+#if defined(_WIN32)
     FILETIME ft{};
     ::GetSystemTimePreciseAsFileTime(&ft);
     return fileTimeToUint64(ft);
+#else
+    // Nanosecond wall clock folded into 100 ns ticks since 1601.
+    timespec ts{};
+    if (::clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        return kUnixEpochTicks;
+    }
+    const int64_t ticks = static_cast<int64_t>(ts.tv_sec) * static_cast<int64_t>(kTicksPerSecond)
+                        + static_cast<int64_t>(ts.tv_nsec / 100)
+                        + static_cast<int64_t>(kUnixEpochTicks);
+    return ticks < 0 ? 0 : static_cast<uint64_t>(ticks);
+#endif
 }
 
 /**
@@ -337,6 +487,7 @@ double nowMonotonicSeconds()
     return static_cast<double>(qpcCounter()) / static_cast<double>(qpcFrequency());
 }
 
+#if defined(_WIN32)
 /**
  * @brief FILETIME -> uint64.
  */
@@ -355,6 +506,7 @@ FILETIME uint64ToFileTime(uint64_t v)
     ft.dwHighDateTime = static_cast<DWORD>(v >> 32);
     return ft;
 }
+#endif
 
 /**
  * @brief FILETIME uint64 -> Unix milliseconds (negative before 1970).

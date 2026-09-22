@@ -1,8 +1,13 @@
 // ---------------------------------------------------------------------------
 // Utf.h - UTF-8 <-> UTF-16 conversion and small wide-string helpers.
 //
-// Convention for the whole project: anything that touches a Win32 API is a
+// Convention for the whole project: anything that touches an OS API is a
 // std::wstring; anything serialised (JSON, INI, IPC, log file) is UTF-8.
+//
+// wchar_t is UTF-16 on Windows and UTF-32 on macOS. Every helper here is
+// written against code points, not code units, so callers never need to
+// care; the only place the width shows is fromUtf16(), which decodes raw
+// UTF-16 (AME's log files) into whatever wchar_t is on this platform.
 // ---------------------------------------------------------------------------
 #pragma once
 
@@ -18,10 +23,28 @@ namespace hh::platform {
 std::wstring toWide(std::string_view utf8);
 /// UTF-16 -> UTF-8. Unpaired surrogates are replaced with U+FFFD, never thrown.
 std::string toUtf8(std::wstring_view wide);
-/// Decodes text in a legacy code page (e.g. the user's ANSI page) to UTF-16.
+/// Decodes text in a legacy code page (e.g. the user's ANSI page) to wide text.
 std::wstring fromCodePage(std::string_view bytes, UINT codePage);
 
-/// Upper-cases using the file-system style (CharUpperW), for path keys.
+/**
+ * @brief Decodes UTF-16 code units (host byte order) into a wide string.
+ *
+ * Windows: a straight copy. macOS: surrogate pairs are combined into one
+ * UTF-32 code point and unpaired surrogates become U+FFFD.
+ */
+std::wstring fromUtf16(const char16_t* units, size_t count);
+
+/**
+ * @brief Unicode canonical composition (NFC) of a path or file name.
+ *
+ * macOS file systems hand back decomposed names (NFD) for text that AME's
+ * log, the user and the rest of the engine spell precomposed. Keys built
+ * from both must agree, so names coming from the file system pass through
+ * here. Windows keeps names exactly as typed, so this is the identity there.
+ */
+std::wstring normalizeNfc(std::wstring_view s);
+
+/// Upper-cases 1:1 per code point (CharUpperW on Windows), for path keys.
 std::wstring toUpperInvariant(std::wstring_view s);
 /// Lower-cases using CharLowerW.
 std::wstring toLowerInvariant(std::wstring_view s);

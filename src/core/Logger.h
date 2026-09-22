@@ -61,7 +61,11 @@ private:
     void flushLocked();
 
     mutable std::mutex mutex_;
-    HANDLE file_ = nullptr;
+#if defined(_WIN32)
+    HANDLE file_ = nullptr;          ///< FILE_APPEND_DATA handle (nullptr = closed)
+#else
+    int file_ = -1;                  ///< O_APPEND descriptor (-1 = closed)
+#endif
     std::wstring directory_;
     std::wstring path_;
     LogLevel level_ = LogLevel::Info;

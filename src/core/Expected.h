@@ -23,8 +23,8 @@ namespace hh {
  * @brief A failure description: Win32 code and/or HRESULT plus a human message.
  */
 struct Error {
-    DWORD win32 = 0;              ///< GetLastError() style code (0 when not applicable)
-    HRESULT hr = S_OK;            ///< HRESULT (S_OK when not applicable)
+    DWORD win32 = 0;              ///< GetLastError() style code (0 when not applicable; errno is mapped onto it on POSIX)
+    HRESULT hr = 0;               ///< HRESULT (0 == S_OK when not applicable)
     std::wstring message;         ///< context + system text, ready for logs/UI
 
     /// Builds an Error from GetLastError() with a context prefix.
@@ -35,6 +35,11 @@ struct Error {
     static Error fromHr(HRESULT hr, std::wstring_view context);
     /// Builds an Error that carries only a message.
     static Error text(std::wstring message);
+#if !defined(_WIN32)
+    /// Builds an Error from an errno value: win32 holds the mapped Win32
+    /// number, the message holds strerror() so nothing is lost in translation.
+    static Error fromErrno(int err, std::wstring_view context);
+#endif
 
     /// Formats "context: system message (0x...)" for display.
     [[nodiscard]] std::wstring toString() const;
@@ -44,6 +49,11 @@ struct Error {
 std::wstring win32ErrorText(DWORD code);
 /// Looks up the system message for an HRESULT (trimmed, single line).
 std::wstring hresultText(HRESULT hr);
+
+#if !defined(_WIN32)
+/// Maps an errno value onto the closest Win32 error number (0 stays 0).
+DWORD win32FromErrno(int err) noexcept;
+#endif
 
 /**
  * @brief Holds either a value of type T or an Error.

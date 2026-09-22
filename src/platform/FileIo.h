@@ -1,13 +1,21 @@
 // ---------------------------------------------------------------------------
-// FileIo.h - small, defensive file helpers built on the wide Win32 APIs.
+// FileIo.h - small, defensive file helpers.
 //
-// All paths are accepted as ordinary Win32 paths; helpers apply the \\?\
-// prefix internally where an API needs it (see toExtendedPath).
+// Windows: built on the wide Win32 APIs. All paths are accepted as ordinary
+// Win32 paths; helpers apply the \\?\ prefix internally where an API needs
+// it (see toExtendedPath).
+// POSIX:   built on open/pread/stat/rename. Paths are UTF-8 on the wire;
+// names read back from the file system are NFC-normalised so they compare
+// equal to the same name typed by the user or written by AME.
 // ---------------------------------------------------------------------------
 #pragma once
 
 #include "core/Expected.h"
 #include "platform/Win.h"
+
+#if defined(_WIN32)
+#include "platform/Handle.h"
+#endif
 
 #include <cstdint>
 #include <string>
@@ -41,9 +49,10 @@ enum class OpenProbe {
     Error,      ///< other error
 };
 
-/// Normalises to an absolute path and adds the \\?\ (or \\?\UNC\) prefix.
+/// Normalises to an absolute path and adds the \\?\ (or \\?\UNC\) prefix (POSIX: same as fullPath).
 std::wstring toExtendedPath(std::wstring_view path);
-/// Absolute path without any \\?\ prefix (GetFullPathNameW).
+/// Absolute, lexically normalised path without any \\?\ prefix (GetFullPathNameW
+/// semantics: "." and ".." are resolved textually, symbolic links are left alone).
 std::wstring fullPath(std::wstring_view path);
 
 /// True when the path exists (file or directory).
@@ -59,6 +68,64 @@ Result<uint64_t> fileSize(std::wstring_view path);
 Result<uint64_t> lastWriteUtc(std::wstring_view path);
 /// Full identity (opens the file with share R/W/D, reads attributes, closes).
 Result<FileIdentity> identity(std::wstring_view path);
+
+/**
+ * @brief Size, timestamps and kind of a path from one attribute query.
+ */
+struct FileAttributes {
+    uint64_t size = 0;
+    uint64_t lastWriteUtc = 0;   ///< FILETIME-style ticks
+    uint64_t creationUtc = 0;    ///< FILETIME-style ticks (birth time on macOS)
+    bool isDirectory = false;
+};
+/// Attributes without opening the file. A missing path fails with
+/// ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND in Error::win32.
+Result<FileAttributes> fileAttributes(std::wstring_view path);
+
+/**
+ * @brief A read-only file for positioned reads that never gets in a writer's way.
+ *
+ * Windows opens with FILE_SHARE_READ | WRITE | DELETE, so AME can keep
+ * appending, rename or delete the file while we hold it. POSIX has no
+ * sharing modes, which gives the same guarantee for free.
+ */
+class FileReader {
+public:
+    FileReader() = default;
+    ~FileReader();
+    FileReader(FileReader&& other) noexcept;
+    FileReader& operator=(FileReader&& other) noexcept;
+    FileReader(const FileReader&) = delete;
+    FileReader& operator=(const FileReader&) = delete;
+
+    /**
+     * @brief Opens @p path for reading.
+     * @param sequential  hint that reads walk forward (read-ahead), else random access
+     */
+    Result<void> open(std::wstring_view path, bool sequential = true);
+    /// Closes the file (no-op when closed).
+    void close() noexcept;
+    /// True between a successful open() and close().
+    [[nodiscard]] bool isOpen() const noexcept;
+
+    /**
+     * @brief Reads up to @p length bytes at @p offset.
+     * @param got        receives the number of bytes read (0 at or past EOF)
+     * @param lastError  receives the Win32-numbered error on failure
+     * @return false on an I/O error; true otherwise (EOF included)
+     */
+    bool readAt(uint64_t offset, void* dst, size_t length, size_t& got, DWORD& lastError) noexcept;
+
+    /// Current size of the open file.
+    [[nodiscard]] Result<uint64_t> size() const;
+
+private:
+#if defined(_WIN32)
+    UniqueHandle handle_;
+#else
+    int fd_ = -1;
+#endif
+};
 
 /// Reads the whole file into memory (max @p maxBytes, default 64 MiB).
 Result<std::vector<uint8_t>> readAll(std::wstring_view path, uint64_t maxBytes = 64ull * 1024 * 1024);
@@ -81,7 +148,14 @@ Result<void> moveNoReplace(std::wstring_view from, std::wstring_view to);
 /// Copies a file (fails when the destination exists unless @p overwrite).
 Result<void> copyFile(std::wstring_view from, std::wstring_view to, bool overwrite);
 
-/// Opens for read with share READ|DELETE (deny write) and closes again.
+/**
+ * @brief "Is anyone writing this file right now?"
+ *
+ * Windows opens for read with share READ|DELETE (deny write) and closes again.
+ * macOS has no sharing modes, so it asks the kernel which processes hold the
+ * file open and whether any of those descriptors was opened for writing
+ * (libproc), which answers the same question without taking any lock.
+ */
 OpenProbe probeDenyWrite(std::wstring_view path, DWORD* lastError = nullptr);
 
 /// Lists entries of a directory (names only, no "." / ".."), non-recursive.

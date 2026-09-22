@@ -48,6 +48,7 @@ std::string legacyIni(const char* outputPrefix, const char* deleteOriginal) {
     return text;
 }
 
+#if defined(_WIN32)
 /// ExpandEnvironmentStringsW as an oracle for Settings::expand.
 std::wstring expandEnv(const std::wstring& text) {
     wchar_t buffer[4096] = {};
@@ -55,6 +56,7 @@ std::wstring expandEnv(const std::wstring& text) {
     if (n == 0 || n > std::size(buffer)) { return {}; }
     return std::wstring(buffer);
 }
+#endif
 
 } // namespace
 
@@ -106,7 +108,11 @@ HH_TEST(Settings_defaultsWorkOnAFreshMachine) {
 HH_TEST(Settings_defaultPathIsUnderRoamingAppData) {
     const std::wstring p = Settings::defaultPath();
     CHECK_FALSE(p.empty());
+#if defined(_WIN32)
     CHECK(hh::platform::iendsWith(p, L"\\HdrHint\\settings.ini"));
+#else
+    CHECK(hh::platform::iendsWith(p, L"/HdrHint/settings.ini"));
+#endif
     const std::wstring roaming = hh::platform::roamingAppDataFolder();
     if (!roaming.empty()) { CHECK(hh::platform::istartsWith(p, roaming)); }
 }
@@ -300,6 +306,7 @@ HH_TEST(Settings_savePreservesCommentsOfExistingFile) {
 
 // ---- expand ---------------------------------------------------------------------------------
 
+#if defined(_WIN32)
 HH_TEST(Settings_expandExeAndEnvironment) {
     const Settings s;
     const std::wstring exeDir = hh::platform::exeDirectory();
@@ -338,6 +345,55 @@ HH_TEST(Settings_defaultLutAndPresetForTransfer) {
     (void)s.defaultPresetFor(-1);
     (void)s.defaultPresetFor(9999);
 }
+
+#else
+HH_TEST(Settings_expandExeAndEnvironment) {
+    const Settings s;
+    // Outside an app bundle (the test runner) resources live next to the binary.
+    const std::wstring exeDir = hh::platform::resourceDirectory();
+    CHECK_FALSE(exeDir.empty());
+
+    // "<exe>" is where the shipped files live.
+    CHECK_WEQ(s.expand(L"<exe>/luts"), exeDir + L"/luts");
+    CHECK_WEQ(s.expand(L"<exe>"), exeDir);
+
+    // The Windows folder variables map onto their macOS homes.
+    CHECK_WEQ(s.expand(L"%APPDATA%/x"), hh::platform::roamingAppDataFolder() + L"/x");
+    CHECK_WEQ(s.expand(L"%TEMP%/x"), hh::platform::tempFolder() + L"/x");
+    // A value written on Windows keeps working: its backslashes become separators.
+    CHECK_WEQ(s.expand(L"%APPDATA%\\HdrHint\\presets.json"), hh::platform::roamingAppDataFolder() + L"/HdrHint/presets.json");
+    // "~/" is the home folder.
+    const std::wstring home = s.expand(L"~/Movies");
+    CHECK(home.size() > 8 && home.front() == L'/' && hh::platform::iendsWith(home, L"/Movies"));
+
+    // Unknown variables and plain paths are untouched; empty stays empty.
+    CHECK_WEQ(s.expand(L"%HDRHINT_SURELY_UNSET_VAR%/x"), L"%HDRHINT_SURELY_UNSET_VAR%/x");
+    CHECK_WEQ(s.expand(L"/Volumes/plain/file.cube"), L"/Volumes/plain/file.cube");
+    CHECK(s.expand(L"").empty());
+}
+
+HH_TEST(Settings_defaultLutAndPresetForTransfer) {
+    Settings s;
+    s.pqLutPath = L"<exe>/luts/pq.cube";
+    s.hlgLutPath.clear();
+    s.presetPq = L"pq_custom";
+    s.presetHlg = L"hlg_custom";
+
+    const std::wstring exeDir = hh::platform::resourceDirectory();
+    CHECK_WEQ(s.defaultLutFor(static_cast<int>(TransferKind::PQ)), exeDir + L"/luts/pq.cube");
+    CHECK(s.defaultLutFor(static_cast<int>(TransferKind::HLG)).empty());
+    CHECK(s.defaultLutFor(static_cast<int>(TransferKind::Unknown)).empty());
+
+    CHECK_WEQ(s.defaultPresetFor(static_cast<int>(TransferKind::PQ)), L"pq_custom");
+    CHECK_WEQ(s.defaultPresetFor(static_cast<int>(TransferKind::HLG)), L"hlg_custom");
+    // Garbage transfer kinds must not crash; whatever comes back is a string.
+    (void)s.defaultLutFor(-1);
+    (void)s.defaultLutFor(9999);
+    (void)s.defaultPresetFor(-1);
+    (void)s.defaultPresetFor(9999);
+}
+
+#endif
 
 // ---- legacy migration -------------------------------------------------------------------
 

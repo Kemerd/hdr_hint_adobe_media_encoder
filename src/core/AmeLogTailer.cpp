@@ -27,6 +27,7 @@
 
 #include "core/Logger.h"
 #include "core/PathUtil.h"
+#include "platform/FileIo.h"
 #include "platform/Time.h"
 #include "platform/Utf.h"
 
@@ -75,8 +76,8 @@ constexpr uint64_t kNoteIntervalMs = 60 * 1000;
 constexpr uint64_t kMaxStateBytes = 4ull * 1024 * 1024;
 /// Upper bound on persisted entries (stale overrides could pile up otherwise).
 constexpr size_t kMaxStateEntries = 256;
-/// WaitForMultipleObjects allows 64 handles: stop + wake + this many watches.
-constexpr size_t kMaxWatches = MAXIMUM_WAIT_OBJECTS - 2;
+/// waitAny() takes 64 handles: stop + wake + this many watches.
+constexpr size_t kMaxWatches = platform::kMaxWaitHandles - 2;
 
 /// Clamp ranges for the configuration.
 constexpr int kMinPollMs = 250;
@@ -225,6 +226,7 @@ void postNote(IEngineSink& sink, std::wstring_view pathKey, std::wstring text, b
  * with very old AME builds on non-English systems.
  */
 [[nodiscard]] UINT userAnsiCodePage() {
+#if defined(_WIN32)
     static const UINT s_codePage = [] {
         DWORD cp = 0;
         // LOCALE_RETURN_NUMBER writes a DWORD into the "string" buffer.
@@ -236,6 +238,11 @@ void postNote(IEngineSink& sink, std::wstring_view pathKey, std::wstring text, b
         return static_cast<UINT>(cp);
     }();
     return s_codePage;
+#else
+    // macOS AME writes UTF-8 / UTF-16; CP_ACP is the Windows-1252 fallback
+    // for logs copied over from a western Windows machine.
+    return CP_ACP;
+#endif
 }
 
 /**
@@ -268,16 +275,19 @@ size_t drainUtf16Lines(std::vector<uint8_t>& carry, AmeLogParser& parser, uint64
         return 0;
     }
 
-    // Reinterpret the even prefix as wide characters (the host is little-endian).
-    std::wstring text(evenBytes / sizeof(wchar_t), L'\0');
+    // Reinterpret the even prefix as UTF-16 code units (the host is
+    // little-endian). Line splitting happens on code units so the byte
+    // arithmetic below holds whatever width wchar_t has on this platform;
+    // each line is then decoded to wide text on its own.
+    std::u16string text(evenBytes / sizeof(char16_t), u'\0');
     std::memcpy(text.data(), carry.data(), evenBytes);
 
-    const size_t lastNl = text.rfind(L'\n');
-    if (lastNl == std::wstring::npos) {
+    const size_t lastNl = text.rfind(u'\n');
+    if (lastNl == std::u16string::npos) {
         // No newline at all: hold the bytes unless the carry has gone absurd.
         if (carry.size() > kMaxCarryBytes) {
             HH_LOG_WARN(kLog, L"{} bytes without a newline; flushing as one line", carry.size());
-            parser.feedLine(text, fileClockUtc);
+            parser.feedLine(platform::fromUtf16(text.data(), text.size()), fileClockUtc);
             carry.clear();
             return 1;
         }
@@ -288,21 +298,21 @@ size_t drainUtf16Lines(std::vector<uint8_t>& carry, AmeLogParser& parser, uint64
     size_t fed = 0;
     size_t start = 0;
     while (start <= lastNl) {
-        size_t nl = text.find(L'\n', start);
-        if (nl == std::wstring::npos || nl > lastNl) {
+        size_t nl = text.find(u'\n', start);
+        if (nl == std::u16string::npos || nl > lastNl) {
             nl = lastNl;
         }
-        std::wstring_view line(text.data() + start, nl - start);
-        if (!line.empty() && line.back() == L'\r') {
-            line.remove_suffix(1);
+        size_t len = nl - start;
+        if (len > 0 && text[start + len - 1] == u'\r') {
+            --len;
         }
-        parser.feedLine(line, fileClockUtc);
+        parser.feedLine(platform::fromUtf16(text.data() + start, len), fileClockUtc);
         ++fed;
         start = nl + 1;
     }
 
     // Keep the raw bytes of the unterminated tail (and the odd byte, if any).
-    const size_t tailStart = (lastNl + 1) * sizeof(wchar_t);
+    const size_t tailStart = (lastNl + 1) * sizeof(char16_t);
     if (tailStart >= carry.size()) {
         carry.clear();
     } else {
@@ -471,12 +481,12 @@ void AmeLogTailer::start(const TailerConfig& config) {
     loadState();
 
     // Both events are manual-reset: the worker resets wake after handling it.
-    stopEvent_ = platform::makeEvent(true);
-    wakeEvent_ = platform::makeEvent(true);
+    stopEvent_ = platform::makeWaitableEvent(true);
+    wakeEvent_ = platform::makeWaitableEvent(true);
     if (!stopEvent_ || !wakeEvent_) {
         HH_LOG_ERROR(kLog, L"CreateEventW failed: {}", Error::fromLastError(L"events").toString());
-        stopEvent_.reset();
-        wakeEvent_.reset();
+        stopEvent_.close();
+        wakeEvent_.close();
         return;
     }
 
@@ -503,7 +513,7 @@ void AmeLogTailer::stop() {
     const bool hadThread = thread_.joinable();
     running_.store(false);
     if (stopEvent_) {
-        ::SetEvent(stopEvent_.get());
+        stopEvent_.set();
     }
 
     // Join unless we are (incorrectly) being called on the worker itself.
@@ -528,8 +538,8 @@ void AmeLogTailer::stop() {
         }
     }
     watches_.clear();
-    stopEvent_.reset();
-    wakeEvent_.reset();
+    stopEvent_.close();
+    wakeEvent_.close();
     if (hadThread) {
         HH_LOG_INFO(kLog, L"stopped");
     }
@@ -541,7 +551,7 @@ void AmeLogTailer::stop() {
 void AmeLogTailer::rescan() {
     rescanRequested_.store(true);
     if (wakeEvent_) {
-        ::SetEvent(wakeEvent_.get());
+        wakeEvent_.set();
     }
 }
 
@@ -635,10 +645,10 @@ void AmeLogTailer::threadMain() {
     };
 
     // ---- Main loop -----------------------------------------------------------
-    std::vector<HANDLE> handles;
+    std::vector<platform::WaitHandle> handles;
     std::vector<platform::DirectoryWatch*> byHandle;
-    handles.reserve(MAXIMUM_WAIT_OBJECTS);
-    byHandle.reserve(MAXIMUM_WAIT_OBJECTS);
+    handles.reserve(platform::kMaxWaitHandles);
+    byHandle.reserve(platform::kMaxWaitHandles);
     const DWORD pollTimeout = static_cast<DWORD>(config_.pollMs);
     const uint64_t rediscoverMs = static_cast<uint64_t>(config_.rediscoverSeconds) * 1000ull;
 
@@ -646,14 +656,14 @@ void AmeLogTailer::threadMain() {
         // Wait list: stop, wake, then one event per live watch.
         handles.clear();
         byHandle.clear();
-        handles.push_back(stopEvent_.get());
-        handles.push_back(wakeEvent_.get());
+        handles.push_back(stopEvent_.handle());
+        handles.push_back(wakeEvent_.handle());
         for (const auto& w : watches_) {
             if (!w || !w->active()) {
                 continue;
             }
-            const HANDLE ev = w->event();
-            if (ev == nullptr || handles.size() >= MAXIMUM_WAIT_OBJECTS) {
+            const platform::WaitHandle ev = w->event();
+            if (ev == platform::kInvalidWaitHandle || handles.size() >= platform::kMaxWaitHandles) {
                 continue;
             }
             handles.push_back(ev);
@@ -661,14 +671,14 @@ void AmeLogTailer::threadMain() {
         }
 
         // Sleep until something fires or the poll interval elapses.
-        const DWORD r = ::WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE, pollTimeout);
-        if (r == WAIT_OBJECT_0) {
+        const DWORD r = platform::waitAny(handles.data(), handles.size(), pollTimeout);
+        if (r == 0) {
             break;
         }
-        if (r == WAIT_FAILED) {
+        if (r == platform::kWaitFailed) {
             // Only reachable with a bad handle; never spin on it.
-            HH_LOG_ERROR(kLog, L"WaitForMultipleObjects failed: {}", Error::fromLastError(L"wait").toString());
-            if (::WaitForSingleObject(stopEvent_.get(), 1000) == WAIT_OBJECT_0) {
+            HH_LOG_ERROR(kLog, L"wait failed: {}", Error::fromLastError(L"wait").toString());
+            if (stopEvent_.wait(1000)) {
                 break;
             }
             continue;
@@ -678,19 +688,19 @@ void AmeLogTailer::threadMain() {
         }
 
         // Decide whether this wake-up warrants a look at the files.
-        bool pollNow = (r == WAIT_TIMEOUT);
-        if (r == WAIT_OBJECT_0 + 1) {
-            ::ResetEvent(wakeEvent_.get());
+        bool pollNow = (r == platform::kWaitTimeout);
+        if (r == 1) {
+            wakeEvent_.reset();
             pollNow = true;
         }
-        if (r != WAIT_TIMEOUT) {
-            // WaitForMultipleObjects reports the lowest signalled handle only,
+        if (r != platform::kWaitTimeout) {
+            // waitAny() reports the lowest signalled handle only,
             // so every watch is polled with a zero timeout.
             for (platform::DirectoryWatch* w : byHandle) {
                 if (!w || !w->active()) {
                     continue;
                 }
-                if (::WaitForSingleObject(w->event(), 0) != WAIT_OBJECT_0) {
+                if (!platform::isSignalled(w->event())) {
                     continue;
                 }
                 bool overflowed = false;
@@ -859,21 +869,17 @@ void AmeLogTailer::readFile(const LogCandidate& candidate, TailState& state, boo
     }
 
     // ---- Open per read; never held across a wait ----------------------------
-    const std::wstring extended = platform::toExtendedPath(candidate.path);
-    const std::wstring& openPath = extended.empty() ? candidate.path : extended;
-    platform::UniqueHandle file(::CreateFileW(openPath.c_str(), GENERIC_READ,
-                                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-                                              OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
-    if (!file) {
-        const DWORD err = ::GetLastError();
+    platform::FileReader file;
+    if (auto opened = file.open(candidate.path, true); !opened) {
+        const DWORD err = opened.error().win32;
         if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
             // AME holds it exclusively for a moment while writing; next round.
             HH_LOG_DEBUG(kLog, L"'{}' is locked; retrying next round", candidate.path);
         } else if (isBenignError(err)) {
             HH_LOG_DEBUG(kLog, L"'{}' vanished before it could be opened", candidate.path);
         } else {
-            HH_LOG_WARN(kLog, L"cannot open '{}': {} ({})", candidate.path, win32ErrorText(err), err);
-            postNote(sink_, key, L"Cannot open " + candidate.path + L": " + win32ErrorText(err), true);
+            HH_LOG_WARN(kLog, L"cannot open '{}': {}", candidate.path, opened.error().toString());
+            postNote(sink_, key, L"Cannot open " + candidate.path + L": " + opened.error().toString(), true);
         }
         return;
     }
@@ -912,11 +918,9 @@ void AmeLogTailer::readFile(const LogCandidate& candidate, TailState& state, boo
     // ---- Encoding detection at the top of the file ---------------------------
     if (state.offset == 0) {
         uint8_t head[kProbeBytes] = {};
-        DWORD got = 0;
-        LARGE_INTEGER zero{};
-        if (!::SetFilePointerEx(file.get(), zero, nullptr, FILE_BEGIN) ||
-            !::ReadFile(file.get(), head, static_cast<DWORD>(sizeof(head)), &got, nullptr)) {
-            const DWORD err = ::GetLastError();
+        size_t got = 0;
+        DWORD err = 0;
+        if (!file.readAt(0, head, sizeof(head), got, err)) {
             HH_LOG_WARN(kLog, L"cannot read the head of '{}': {} ({})", candidate.path, win32ErrorText(err), err);
             postNote(sink_, key, L"Cannot read " + candidate.path + L": " + win32ErrorText(err), true);
             return;
@@ -944,22 +948,13 @@ void AmeLogTailer::readFile(const LogCandidate& candidate, TailState& state, boo
     }
 
     // ---- Read from the offset to EOF in chunks --------------------------------
-    LARGE_INTEGER pos{};
-    pos.QuadPart = static_cast<LONGLONG>(state.offset);
-    if (!::SetFilePointerEx(file.get(), pos, nullptr, FILE_BEGIN)) {
-        const DWORD err = ::GetLastError();
-        HH_LOG_WARN(kLog, L"seek to {} in '{}' failed: {} ({})", state.offset, candidate.path, win32ErrorText(err), err);
-        postNote(sink_, key, L"Cannot seek in " + candidate.path + L": " + win32ErrorText(err), true);
-        return;
-    }
-
     std::vector<uint8_t> chunk(kChunkBytes);
     uint64_t bytesRead = 0;
     size_t linesFed = 0;
     for (;;) {
-        DWORD got = 0;
-        if (!::ReadFile(file.get(), chunk.data(), static_cast<DWORD>(chunk.size()), &got, nullptr)) {
-            const DWORD err = ::GetLastError();
+        size_t got = 0;
+        DWORD err = 0;
+        if (!file.readAt(state.offset, chunk.data(), chunk.size(), got, err)) {
             if (err != ERROR_HANDLE_EOF) {
                 HH_LOG_WARN(kLog, L"read of '{}' failed at {}: {} ({})", candidate.path, state.offset,
                             win32ErrorText(err), err);
@@ -984,12 +979,12 @@ void AmeLogTailer::readFile(const LogCandidate& candidate, TailState& state, boo
 
         // A stop request must not wait for a multi-MB seed to finish; the
         // state stays consistent because every consumed byte is accounted for.
-        if (::WaitForSingleObject(stopEvent_.get(), 0) == WAIT_OBJECT_0) {
+        if (stopEvent_.isSet()) {
             HH_LOG_DEBUG(kLog, L"stop requested mid-read of '{}'", candidate.path);
             break;
         }
     }
-    file.reset();
+    file.close();
 
     // Remember what we saw; a race with an append is corrected by the offset.
     state.identity = ident;

@@ -139,6 +139,20 @@ DirectoryWatch::~DirectoryWatch() {
     stop();
 }
 
+/**
+ * @brief True while the directory handle is open (a fatal read error closes it).
+ */
+bool DirectoryWatch::active() const noexcept {
+    return dirHandle_.valid();
+}
+
+/**
+ * @brief The manual-reset event the overlapped read completes into.
+ */
+WaitHandle DirectoryWatch::event() const noexcept {
+    return event_.get();
+}
+
 // ---------------------------------------------------------------------------
 // start / stop
 // ---------------------------------------------------------------------------

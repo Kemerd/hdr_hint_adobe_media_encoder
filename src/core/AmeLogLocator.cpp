@@ -276,8 +276,8 @@ std::vector<LogCandidate> discoverAmeLogs(const std::vector<std::wstring>& overr
     if (documents.empty()) {
         HH_LOG_WARN(kLog, L"Documents folder unavailable; only overrides are used");
     } else {
-        scanRoot(documents + L"\\Adobe\\Adobe Media Encoder", out, groups);
-        scanRoot(documents + L"\\Adobe Media Encoder", out, groups);
+        scanRoot(path::join(path::join(documents, L"Adobe"), L"Adobe Media Encoder"), out, groups);
+        scanRoot(path::join(documents, L"Adobe Media Encoder"), out, groups);
     }
 
     // Newest activity first; stable so equal stamps keep directory order.

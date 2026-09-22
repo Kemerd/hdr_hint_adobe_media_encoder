@@ -1,0 +1,108 @@
+# ---------------------------------------------------------------------------
+# CI: build and test HDR Hint on Windows (MSVC) and macOS (Apple Clang).
+#
+# Every push and pull request gets:
+#   windows  Visual Studio 2022 generator, Release, unit tests, CLI smoke test,
+#            zipped HdrHint.exe + hdrhint_cli.exe as an artifact
+#   macos    Ninja, Release, universal (arm64 + x86_64) HdrHint.app, unit tests,
+#            CLI smoke test, headless UI screenshots, HdrHint.dmg artifact
+# ---------------------------------------------------------------------------
+name: build
+
+on:
+  push:
+    branches: [main, macos-support]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Windows (MSVC)
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: CLI smoke test
+        shell: pwsh
+        run: |
+          & build/Release/hdrhint_cli.exe --version
+          & build/Release/hdrhint_cli.exe --presets
+
+      - name: Package
+        run: cpack --config build/CPackConfig.cmake -C Release -B build/package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: HdrHint-windows
+          path: build/package/*.zip
+          if-no-files-found: error
+
+  macos:
+    name: macOS (Apple Clang)
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          brew install ninja
+          xcodebuild -version
+          clang++ --version
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DHH_UNIVERSAL=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: CLI smoke test
+        run: |
+          build/hdrhint_cli --version
+          build/hdrhint_cli --presets
+          lipo -info build/hdrhint_cli
+
+      - name: UI screenshots (headless render)
+        if: hashFiles('src/app/mac/main.mm') != ''
+        run: |
+          mkdir -p screenshots
+          APP="build/HdrHint.app/Contents/MacOS/HdrHint"
+          lipo -info "$APP"
+          for tab in 0 1 2; do
+            "$APP" --screenshot "screenshots/tab${tab}-dark.png" --tab $tab --dark --width 520 --height 720
+            "$APP" --screenshot "screenshots/tab${tab}-light.png" --tab $tab --light --width 520 --height 720
+          done
+          "$APP" --screenshot screenshots/queue-scenario1-dark.png --scenario 1 --tab 0 --dark --width 420 --height 720
+          ls -la screenshots
+
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('src/app/mac/main.mm') != ''
+        with:
+          name: HdrHint-macos-screenshots
+          path: screenshots/*.png
+
+      - name: Package
+        if: hashFiles('src/app/mac/main.mm') != ''
+        run: cpack --config build/CPackConfig.cmake -B build/package
+
+      - uses: actions/upload-artifact@v4
+        if: hashFiles('src/app/mac/main.mm') != ''
+        with:
+          name: HdrHint-macos
+          path: build/package/*.dmg
+          if-no-files-found: error

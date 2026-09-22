@@ -1,11 +1,16 @@
 // ---------------------------------------------------------------------------
-// cli_main.cpp - hdrhint_cli.exe: headless front-end for scripts and tests.
+// cli_main.cpp - hdrhint_cli: headless front-end for scripts and tests.
 //
 //   hdrhint_cli --process <file> [--preset <id>] [--lut <path>|none] [--suffix <s>]
 //   hdrhint_cli --identify <file>
 //   hdrhint_cli --presets
 //   hdrhint_cli --mkvmerge
 //   hdrhint_cli --version
+//
+// Output is built with std::format and written through one helper, so the
+// same text comes out on the Windows console (UTF-16 text mode) and on a
+// POSIX terminal or pipe (UTF-8), with no printf-format differences between
+// the two C runtimes ("%s" means a wide string on MSVC, a narrow one on POSIX).
 // ---------------------------------------------------------------------------
 #include "core/Engine.h"
 #include "core/HdrPresets.h"
@@ -13,22 +18,48 @@
 #include "core/MkvmergeLocator.h"
 #include "core/MkvmergeRunner.h"
 #include "core/Settings.h"
-#include "platform/Handle.h"
 #include "platform/KnownFolders.h"
 #include "platform/Utf.h"
 #include "platform/Win.h"
 
-#include <cstdio>
+#if defined(_WIN32)
+#include "platform/Handle.h"
+
 #include <fcntl.h>
 #include <io.h>
+#else
+#include <csignal>
+#endif
+
+#include <cstdio>
+#include <format>
 #include <string>
 #include <vector>
 
 namespace {
 
+/**
+ * @brief Writes wide text to stdout / stderr in the platform's encoding.
+ *
+ * Windows: the streams are in _O_U8TEXT mode, so fputws does the UTF-8 work.
+ * POSIX: the text is converted to UTF-8 and written as bytes; the streams
+ * are never switched to wide orientation.
+ */
+void emit(std::FILE* stream, const std::wstring& text) {
+    if (stream == nullptr || text.empty()) {
+        return;
+    }
+#if defined(_WIN32)
+    std::fputws(text.c_str(), stream);
+#else
+    const std::string utf8 = hh::platform::toUtf8(text);
+    std::fwrite(utf8.data(), 1, utf8.size(), stream);
+#endif
+}
+
 /// Prints usage to stdout.
 void printUsage() {
-    std::wprintf(L"HDR Hint command line\n\n"
+    emit(stdout, L"HDR Hint command line\n\n"
                  L"  hdrhint_cli --process <file> [--preset <id>] [--lut <path>|none] [--suffix <s>]\n"
                  L"  hdrhint_cli --identify <file>\n"
                  L"  hdrhint_cli --presets\n"
@@ -52,33 +83,29 @@ bool hasFlag(const std::vector<std::wstring>& args, const wchar_t* flag) {
     return false;
 }
 
-} // namespace
-
-int wmain(int argc, wchar_t** argv) {
-    // UTF-8 text mode: non-ASCII paths print correctly on the console and when
-    // the output is captured by a script (PowerShell reads UTF-8 pipes).
-    (void)_setmode(_fileno(stdout), _O_U8TEXT);
-    (void)_setmode(_fileno(stderr), _O_U8TEXT);
-
-    std::vector<std::wstring> args;
-    for (int i = 1; i < argc; ++i) { if (argv[i]) { args.emplace_back(argv[i]); } }
+/**
+ * @brief The whole command-line tool once argv is wide text.
+ */
+int run(const std::vector<std::wstring>& args) {
     if (args.empty() || hasFlag(args, L"--help") || hasFlag(args, L"-h")) { printUsage(); return 0; }
 
     if (hasFlag(args, L"--version")) {
-        std::wprintf(L"hdrhint_cli 1.0.0\n");
+        emit(stdout, L"hdrhint_cli 1.0.0\n");
         return 0;
     }
 
     // Logging goes to the same folder as the app so problems are diagnosable.
+#if defined(_WIN32)
     hh::platform::ScopedCoInit com;
-    hh::Logger::instance().open(hh::platform::appLocalDataFolder() + L"\\logs", hh::LogLevel::Info, 2048, 5);
+#endif
+    hh::Logger::instance().open(hh::platform::appLogsFolder(), hh::LogLevel::Info, 2048, 5);
 
     // Settings + presets exactly as the app loads them.
     hh::Settings settings;
     settings.applyMachineDefaults();
     const std::wstring settingsPath = hh::Settings::defaultPath();
     if (auto r = settings.load(settingsPath); !r) {
-        std::fwprintf(stderr, L"warning: %s\n", r.error().toString().c_str());
+        emit(stderr, std::format(L"warning: {}\n", r.error().toString()));
     }
     settings.applyMachineDefaults();
     hh::PresetRegistry presets;
@@ -86,36 +113,38 @@ int wmain(int argc, wchar_t** argv) {
 
     if (hasFlag(args, L"--presets")) {
         for (const auto& p : presets.all()) {
-            std::wprintf(L"%-22s %s\n", p.id.c_str(), p.label.c_str());
+            emit(stdout, std::format(L"{:<22} {}\n", p.id, p.label));
         }
         return 0;
     }
 
     if (hasFlag(args, L"--mkvmerge")) {
         const hh::MkvmergeInfo info = hh::locateMkvmerge(settings.expand(settings.mkvmergePath), settings.minMajorVersion);
-        std::wprintf(L"path: %s\nversion: %s\nok: %s\n%s\n", info.path.c_str(), info.versionLine.c_str(),
-                     info.ok ? L"yes" : L"no", info.error.c_str());
+        emit(stdout, std::format(L"path: {}\nversion: {}\nok: {}\n{}\n", info.path, info.versionLine,
+                                 info.ok ? L"yes" : L"no", info.error));
         return info.ok ? 0 : 2;
     }
 
     if (const std::wstring file = argValue(args, L"--identify"); !file.empty()) {
         const hh::MkvmergeInfo info = hh::locateMkvmerge(settings.expand(settings.mkvmergePath), settings.minMajorVersion);
-        if (!info.ok) { std::fwprintf(stderr, L"error: %s\n", info.error.c_str()); return 2; }
+        if (!info.ok) { emit(stderr, std::format(L"error: {}\n", info.error)); return 2; }
         auto ident = hh::MkvmergeRunner::identify(info.path, file);
-        if (!ident) { std::fwprintf(stderr, L"error: %s\n", ident.error().toString().c_str()); return 3; }
+        if (!ident) { emit(stderr, std::format(L"error: {}\n", ident.error().toString())); return 3; }
         const auto& id = ident.value();
-        std::wprintf(L"container: %s\nvideo track id: %d (%s, %s)\naudio tracks: %d\n", id.containerType.c_str(),
-                     id.videoTrackId, id.videoCodec.c_str(), id.pixelDimensions.c_str(), id.audioTrackCount);
+        emit(stdout, std::format(L"container: {}\nvideo track id: {} ({}, {})\naudio tracks: {}\n", id.containerType,
+                                 id.videoTrackId, id.videoCodec, id.pixelDimensions, id.audioTrackCount));
         if (id.hasColour) {
-            std::wprintf(L"colour: matrix %d range %d transfer %d primaries %d\n", id.matrix, id.range, id.transfer, id.primaries);
+            emit(stdout, std::format(L"colour: matrix {} range {} transfer {} primaries {}\n", id.matrix, id.range,
+                                     id.transfer, id.primaries));
         }
         if (id.hasMastering) {
-            std::wprintf(L"mastering: maxCLL %d maxFALL %d maxLum %.4f minLum %.4f chroma %s white %s\n", id.maxCll, id.maxFall,
-                         id.maxLuminance, id.minLuminance, id.chromaticity.c_str(), id.whitePoint.c_str());
+            emit(stdout, std::format(L"mastering: maxCLL {} maxFALL {} maxLum {:.4f} minLum {:.4f} chroma {} white {}\n",
+                                     id.maxCll, id.maxFall, id.maxLuminance, id.minLuminance, id.chromaticity,
+                                     id.whitePoint));
         }
         for (const auto& a : id.attachments) {
-            std::wprintf(L"attachment: %s (%s, %llu bytes)\n", a.fileName.c_str(), a.mimeType.c_str(),
-                         static_cast<unsigned long long>(a.size));
+            emit(stdout, std::format(L"attachment: {} ({}, {} bytes)\n", a.fileName, a.mimeType,
+                                     static_cast<unsigned long long>(a.size)));
         }
         return 0;
     }
@@ -134,19 +163,46 @@ int wmain(int argc, wchar_t** argv) {
             const int percent = static_cast<int>(progress * 100.0f + 0.5f);
             if (percent != lastPercent) {
                 lastPercent = percent;
-                std::wprintf(L"\rmuxing %3d%%", percent);
+                emit(stdout, std::format(L"\rmuxing {:3}%", percent));
                 std::fflush(stdout);
             }
         });
-        std::wprintf(L"\n");
+        emit(stdout, L"\n");
         if (!result) {
-            std::fwprintf(stderr, L"error: %s\n", result.error().toString().c_str());
+            emit(stderr, std::format(L"error: {}\n", result.error().toString()));
             return 4;
         }
-        std::wprintf(L"created: %s\n", result.value().c_str());
+        emit(stdout, std::format(L"created: {}\n", result.value()));
         return 0;
     }
 
     printUsage();
     return 1;
 }
+
+} // namespace
+
+#if defined(_WIN32)
+int wmain(int argc, wchar_t** argv) {
+    // UTF-8 text mode: non-ASCII paths print correctly on the console and when
+    // the output is captured by a script (PowerShell reads UTF-8 pipes).
+    (void)_setmode(_fileno(stdout), _O_U8TEXT);
+    (void)_setmode(_fileno(stderr), _O_U8TEXT);
+
+    std::vector<std::wstring> args;
+    for (int i = 1; i < argc; ++i) { if (argv[i]) { args.emplace_back(argv[i]); } }
+    return run(args);
+}
+#else
+int main(int argc, char** argv) {
+    // A closed pipe (e.g. "| head") must end the tool quietly, not kill it mid-write.
+    std::signal(SIGPIPE, SIG_IGN);
+
+    // argv is UTF-8 on macOS; file names are normalised like every other path we read.
+    std::vector<std::wstring> args;
+    for (int i = 1; i < argc; ++i) {
+        if (argv[i]) { args.emplace_back(hh::platform::normalizeNfc(hh::platform::toWide(argv[i]))); }
+    }
+    return run(args);
+}
+#endif

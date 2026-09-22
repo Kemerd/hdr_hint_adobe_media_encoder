@@ -61,8 +61,13 @@ public:
     Engine(const Engine&) = delete;
     Engine& operator=(const Engine&) = delete;
 
+#if defined(_WIN32)
     /// Starts the workers. Events are kicked to (hwnd, message).
     Result<void> start(HWND eventTarget, UINT eventMessage);
+#endif
+    /// Starts the workers. @p kick wakes the UI thread (any thread may call it),
+    /// which must then call onEventMessage().
+    Result<void> start(EngineKick kick);
     /// Stops the workers (cancels probes; a running mux is cancelled unless @p waitForMux).
     void stop(bool waitForMux);
     /// Drains and applies queued worker events. Call on the kick message.
@@ -129,6 +134,9 @@ public:
     [[nodiscard]] EffectivePlan resolvePlan(const Job& job) const;
 
 private:
+    /// Everything start() does once the queue knows where to kick.
+    Result<void> startWorkers();
+
     // event application
     void apply(LogItemEvent& e);
     void apply(LogQueueEvent& e);
